@@ -1,0 +1,88 @@
+# Pushguard rules — spec by example.
+# Every field except id and severity is optional, but a rule must have at
+# least one condition (paths, when, added_lines, or ai).
+# All fields on a rule AND together; rules evaluate independently (OR).
+# Globs: picomatch syntax. Regex: JS syntax, max 500 chars.
+# Severity -> action: critical/high = issue + team mention (emails),
+# medium = issue, low = issue for digest triage.
+
+# The original attack: force push by a compromised account.
+- id: force-push
+  description: Any force push to any branch
+  severity: critical
+  when:
+    forced: true
+
+# Code that executes on a teammate's machine after pull + install.
+- id: install-hook-added
+  description: npm lifecycle script added or changed
+  severity: critical
+  paths: ["**/package.json"]
+  added_lines: '"(pre|post)install"|"prepare"\s*:'
+
+# CI is code execution with repo secrets.
+- id: workflow-changed
+  description: GitHub Actions workflow created or modified
+  severity: high
+  paths: [".github/workflows/**"]
+  change_type: [added, modified]
+
+# Deleting protections is the step before the attack.
+- id: protection-removed
+  description: Workflow, CODEOWNERS, or hook config deleted
+  severity: critical
+  paths: [".github/workflows/**", "CODEOWNERS", ".github/CODEOWNERS", ".husky/**"]
+  change_type: [removed]
+
+# Editor-trust vectors: runs when a teammate opens the project.
+- id: editor-autorun-changed
+  description: VS Code tasks or settings modified
+  severity: high
+  paths: [".vscode/tasks.json", ".vscode/settings.json"]
+
+- id: env-file-committed
+  description: Dotenv file pushed to the repo
+  severity: critical
+  paths: ["**/.env", "**/.env.*"]
+  exclude_paths: ["**/.env.example", "**/.env.sample"]
+  change_type: [added, modified]
+
+- id: obfuscated-payload
+  description: Long base64 blob or dynamic code execution added
+  severity: high
+  added_lines: 'eval\(|new Function\(|child_process|[A-Za-z0-9+/]{200,}={0,2}'
+  paths: ["**/*.js", "**/*.ts", "**/*.mjs", "**/*.cjs"]
+
+# Scoped rule: one team, one folder, AI review on top.
+- id: payments-critical-path
+  description: Changes to charge logic get an AI review
+  severity: high
+  repos: ["acme/payments-api", "acme/billing-*"]
+  branches: ["main", "release/*"]
+  paths: ["src/charges/**"]
+  ai: >
+    Does this diff alter payment amounts, currency handling, destination
+    accounts, or disable validation? Answer with a risk level and one
+    sentence of reasoning.
+
+# Watch rule: a single file under repeated attack. Costs zero API calls.
+- id: watch-session-auth
+  description: Any touch of the session auth module
+  severity: critical
+  repos: ["acme/api"]
+  paths: ["src/auth/session.ts"]
+
+- id: branch-deleted
+  description: Branch deleted on a protected-pattern name
+  severity: medium
+  branches: ["main", "release/*"]
+  when:
+    branch_deleted: true
+
+- id: off-hours-push
+  description: Push outside 04:00-18:00 UTC working window
+  severity: low
+  branches: ["main"]
+  when:
+    hour_utc:
+      not_between: [4, 18]

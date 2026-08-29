@@ -1,0 +1,12 @@
+import { readFileSync } from "node:fs"
+import { parse } from "yaml"
+import { rulesFileSchema } from "../schemas/rule"
+
+const result = rulesFileSchema.safeParse(parse(readFileSync("rules.example.yaml", "utf8")))
+if (!result.success) {
+  for (const issue of result.error.issues) {
+    console.error(`${issue.path.join(".")}: ${issue.message}`)
+  }
+  process.exit(1)
+}
+console.log(`rules.example.yaml valid (${result.data.length} rules)`)
