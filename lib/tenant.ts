@@ -10,7 +10,7 @@ export const ALL_ORGS = "__all__"
 
 export type Tenant = {
   installations: InstallationDoc[]
-  // Always a concrete installation: rules and settings are per-org and need
+  // Always a concrete installation: rules are per-org and need
   // something to act on even while the alerts feed is showing everything.
   current: InstallationDoc | null
   allOrgs: boolean
@@ -30,7 +30,6 @@ async function syncInstallationsFromGitHub(memberOrgs: string[]): Promise<void> 
         $set: { installationId, active: true, updatedAt: now },
         $setOnInsert: {
           _id: crypto.randomUUID(),
-          alertsRepo: null,
           alertMention: `@${org}`,
           installedBy: org,
           createdAt: now,
@@ -47,7 +46,7 @@ async function syncInstallationsFromGitHub(memberOrgs: string[]): Promise<void> 
 
 // One-time repair for installs registered before repo/team tracking existed.
 // Once `repos` is set (even to []), webhooks keep it current and this never
-// runs again — the dashboard itself makes no GitHub calls for this data.
+// runs again. The dashboard itself makes no GitHub calls for this data.
 async function backfillScope(doc: InstallationDoc): Promise<InstallationDoc> {
   if (doc.repos !== undefined && doc.teams !== undefined) return doc
   try {

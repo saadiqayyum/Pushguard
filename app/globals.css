@@ -4,6 +4,22 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* Responsive breakpoints and the wider container sizes.
+   `@theme inline` below replaces the default theme rather than extending it,
+   and it declared neither. The stylesheet therefore contained no `min-width`
+   media query at all: `sm:flex` was emitted unconditionally, `sm:hidden`
+   likewise, and whichever came last in source order won at every width, while
+   `sm:inline` was never generated. Every responsive class in the app was a
+   no-op. These are Tailwind's own defaults, restored. */
+@theme {
+  --breakpoint-sm: 40rem;
+  --breakpoint-md: 48rem;
+  --breakpoint-lg: 64rem;
+  --breakpoint-xl: 80rem;
+  --breakpoint-2xl: 96rem;
+
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -128,3 +144,176 @@
     @apply font-sans;
   }
 }
+
+/* Marketing surface -------------------------------------------------------
+   Scoped to .site so the dashboard's neutral theme is untouched. The palette
+   is the product's own material, paper, ink, and the two colours a unified
+   diff already uses. Chroma appears only where it carries meaning: green is a
+   line added, red is a line flagged. There is no third, decorative accent. */
+
+/* On :root, not .site: the scan panel renders inside the dashboard too, and it
+   is built from these same diff colours. */
+:root {
+  --paper: oklch(0.988 0.003 106);
+  --paper-sunk: oklch(0.968 0.004 106);
+  --ink: oklch(0.19 0.015 265);
+  --ink-soft: oklch(0.475 0.012 265);
+  --rule: oklch(0.895 0.006 265);
+  --add: oklch(0.5 0.125 150);
+  --add-wash: oklch(0.955 0.04 150);
+  --flag: oklch(0.53 0.185 25);
+  --flag-wash: oklch(0.955 0.045 25);
+}
+
+.site {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-sans);
+}
+
+/* The monospace face is used on both surfaces, so it is not scoped to either. */
+.mono {
+  font-family: var(--font-display), ui-monospace, monospace;
+  font-feature-settings: "ss02";
+}
+
+/* The display type scale belongs to the marketing pages only.
+   These are bare element selectors, which outrank Tailwind's utility layer: on
+   `.site` alone they were rewriting every dashboard `h1` from `text-xl` to a
+   4rem headline. The dashboard wants the surface, not the poster typography, so
+   it takes `.site` and leaves this behind. */
+.site-type h1,
+.site-type h2,
+.site-type h3 {
+  font-family: var(--font-display), ui-monospace, monospace;
+  font-feature-settings: "ss02";
+}
+
+.site-type h1 {
+  font-size: clamp(2.5rem, 7vw, 4.25rem);
+  font-weight: 600;
+  letter-spacing: -0.045em;
+  line-height: 0.98;
+}
+
+.site-type h2 {
+  font-size: clamp(1.6rem, 3.4vw, 2.15rem);
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  line-height: 1.1;
+}
+
+.site-type h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+/* The eyebrow states a fact about the section, so it is set as data: mono,
+   small, spaced, never a decorative kicker. */
+.eyebrow {
+  font-family: var(--font-display), ui-monospace, monospace;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+/* The gutter is the page's reading grid, borrowed from the thing the product
+   reads. The marker says what the row is. A line added, a protection
+   removed. So it encodes content rather than decorating it. */
+.gutter-row {
+  display: grid;
+  grid-template-columns: 1.75rem minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+  border-top: 1px solid var(--rule);
+  padding: 1.125rem 0;
+}
+
+/* Same grid as .gutter-row without the rule and padding. Defined here rather
+   than as a Tailwind arbitrary value: `grid-cols-[1.75rem_minmax(0,1fr)]`
+   silently failed to generate. The comma inside the arbitrary value, leaving
+   a single column, which is how "Assigned to" ended up stacked above its own
+   value elsewhere on the site. */
+.gutter-row-tight {
+  display: grid;
+  grid-template-columns: 1.75rem minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: start;
+}
+
+.gutter-mark {
+  font-family: var(--font-display), ui-monospace, monospace;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.45;
+  text-align: center;
+  border-radius: 0.25rem;
+}
+
+.gutter-mark[data-mark="+"] {
+  color: var(--add);
+  background: var(--add-wash);
+}
+
+.gutter-mark[data-mark="-"] {
+  color: var(--flag);
+  background: var(--flag-wash);
+}
+
+.gutter-mark[data-mark="n"] {
+  color: var(--ink-soft);
+  background: var(--paper-sunk);
+}
+
+.diff-line {
+  font-family: var(--font-display), ui-monospace, monospace;
+  font-size: 0.8125rem;
+  line-height: 1.65;
+  padding: 0.125rem 0.5rem;
+  border-radius: 0.25rem;
+  overflow-x: auto;
+  white-space: pre;
+  color: var(--flag);
+  background: var(--flag-wash);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .reveal {
+    animation: reveal 0.32s cubic-bezier(0.2, 0.7, 0.3, 1) both;
+  }
+
+  /* A scan in progress reads its way down the gutter. */
+  .scanning::after {
+    content: "";
+    position: absolute;
+    inset-inline: 0;
+    height: 1px;
+    background: var(--add);
+    animation: sweep 1.6s ease-in-out infinite;
+  }
+}
+
+@keyframes reveal {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
+}
+
+@keyframes sweep {
+  0% {
+    top: 0;
+    opacity: 0;
+  }
+  35% {
+    opacity: 0.9;
+  }
+  100% {
+    top: 100%;
+    opacity: 0;
+  }
+}
+

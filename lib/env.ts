@@ -5,6 +5,8 @@ const envSchema = z.object({
   GITHUB_APP_ID: z.string().min(1),
   GITHUB_APP_PRIVATE_KEY: z.string().includes("PRIVATE KEY"),
   GITHUB_WEBHOOK_SECRET: z.string().min(16),
+  // Set by the scheduler that drains the scan queue; when set, it is required.
+  CRON_SECRET: z.string().min(16).optional(),
   ANTHROPIC_API_KEY: z.string().min(1).optional(),
   ANTHROPIC_BASE_URL: z.string().url().optional(),
   AUTH_SECRET: z.string().min(16),

@@ -8,7 +8,10 @@ import { rulesFileSchema } from "@/schemas/rule"
 test("every default rule is valid and has a condition", () => {
   assert.ok(defaultRules.length > 0)
   for (const rule of defaultRules) {
-    assert.ok(rule.paths || rule.when || rule.added_lines || rule.ai, `${rule.id} has no condition`)
+    assert.ok(
+      rule.paths || rule.all_of || rule.when || rule.added_lines || rule.ai,
+      `${rule.id} has no condition`,
+    )
   }
 })
 

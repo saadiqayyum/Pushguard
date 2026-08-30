@@ -44,7 +44,7 @@ export function ScopeSelect({
   return (
     <div className="space-y-2">
       {/* modal: the dialog locks page scroll with react-remove-scroll, and this
-          popover portals outside the dialog's subtree — so without its own lock
+          popover portals outside the dialog's subtree. So without its own lock
           the list refuses wheel input even though it overflows. */}
       <Popover modal>
         <PopoverTrigger asChild>

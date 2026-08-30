@@ -12,6 +12,7 @@ export const POST = withErrorHandler("/api/rules/test", async (request) => {
     repo: sample.repo,
     branch: sample.branch,
     forced: sample.forced,
+    senderFirstPush: sample.senderFirstPush,
     branchCreated: sample.branchCreated,
     branchDeleted: sample.branchDeleted,
     hourUtc: new Date().getUTCHours(),

@@ -1,4 +1,4 @@
-# Pushguard rules — spec by example.
+# Pushguard rules, spec by example.
 # Every field except id and severity is optional, but a rule must have at
 # least one condition (paths, when, added_lines, or ai).
 # All fields on a rule AND together; rules evaluate independently (OR).
@@ -52,6 +52,11 @@
   severity: high
   added_lines: 'eval\(|new Function\(|child_process|[A-Za-z0-9+/]{200,}={0,2}'
   paths: ["**/*.js", "**/*.ts", "**/*.mjs", "**/*.cjs"]
+  # `ai` runs only after the regex above has already matched, and only on the
+  # push path. It needs a diff, so a scan drops it. The verdict is advisory:
+  # it annotates the ticket and can never stop one being filed.
+  ai: >-
+    Is this obfuscated or dynamically executed code a deliberate attempt to hide behaviour, or an ordinary build artifact such as a minified bundle, a source map, or a vendored dependency? Say what the code actually does if you can tell.
 
 # Scoped rule: one team, one folder, AI review on top.
 - id: payments-critical-path
@@ -71,6 +76,27 @@
   severity: critical
   repos: ["acme/api"]
   paths: ["src/auth/session.ts"]
+
+# Push-behaviour rules. These ask about the act of pushing rather than about the
+# code, which is the one thing a code scanner cannot see.
+
+# Not suspicious alone, context for everything else in the feed. Answered from
+# stored history, so it never fires in a scan.
+- id: first-push-by-account
+  description: An account pushed to this repository for the first time
+  severity: medium
+  when:
+    sender_first_push: true
+
+# `all_of` groups must EACH be matched by at least one changed file in the SAME
+# push. Editing CI is routine. Editing CI in the push that also changes who
+# reviews it is the shape of removing the person who would have noticed.
+- id: reviewers-and-ci-in-one-push
+  description: One push changed both the review rules and the CI that runs with your secrets
+  severity: critical
+  all_of:
+    - ["CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS", ".github/**/CODEOWNERS"]
+    - [".github/workflows/**"]
 
 - id: branch-deleted
   description: Branch deleted on a protected-pattern name

@@ -3,8 +3,6 @@ import { memberScopes, requireUser } from "@/lib/auth"
 import { rulesCollection, ruleVersionsCollection, serializeRule, type RuleDoc } from "@/lib/db"
 import { AppError } from "@/lib/errors"
 import { logger } from "@/lib/logger"
-import { notifyRuleChange } from "@/lib/rule-notify"
-import { invalidateRulesCache } from "@/lib/rules"
 import { parsePaging } from "@/lib/paging"
 import { withErrorHandler } from "@/lib/route"
 import { resolveTenant } from "@/lib/tenant"
@@ -72,9 +70,6 @@ export const POST = withErrorHandler("/api/rules", async (request) => {
     changedBy: login,
     changedAt: now,
   })
-
-  invalidateRulesCache(owner)
-  notifyRuleChange(owner, "created", rule.id, login)
   logger.info("rule_created", { owner, ruleId: rule.id, by: login })
   return NextResponse.json({ data: serializeRule(doc) }, { status: 201 })
 })

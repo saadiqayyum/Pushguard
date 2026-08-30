@@ -1,37 +1,32 @@
 import { NextResponse } from "next/server"
 import { requireMember } from "@/lib/auth"
-import { activeInstallation } from "@/lib/db"
-import { AppError } from "@/lib/errors"
-import { listAlertIssues } from "@/lib/github"
+import { listAlerts } from "@/lib/db"
 import { parsePaging } from "@/lib/paging"
 import { withErrorHandler } from "@/lib/route"
 
+// Mongo only. The GitHub issue is still where people triage, but the feed is
+// served from the mirror the issues webhook keeps current, so opening the
+// dashboard costs no GitHub call.
 export const GET = withErrorHandler("/api/alerts", async (request) => {
   const url = new URL(request.url)
   const org = url.searchParams.get("org") ?? ""
-  await requireMember(org)
+  const member = await requireMember(org)
   const paging = parsePaging(url.searchParams)
 
-  const installation = await activeInstallation(org)
-  if (!installation) throw new AppError("not_found", "Installation not found")
-
-  const result = await listAlertIssues(
-    installation.installationId,
-    org,
-    installation.accountType ?? "User",
-    paging,
-  )
-  const data = result.issues.map((issue) => ({
-    number: issue.number,
-    repo: issue.repo,
-    title: issue.title,
-    url: issue.html_url,
-    state: issue.state,
-    createdAt: issue.created_at,
-    labels: issue.labels.map((l) => l.name),
-  }))
+  const result = await listAlerts(member.login, [org], paging)
   return NextResponse.json({
-    data,
+    data: result.alerts.map((alert) => ({
+      number: alert.number,
+      repo: alert.repo,
+      title: alert.title,
+      url: alert.url,
+      state: alert.state,
+      severity: alert.severity,
+      acknowledgedAt: alert.acknowledgedAt?.toISOString() ?? null,
+      acknowledgedBy: alert.acknowledgedBy,
+      assignees: alert.assignees,
+      createdAt: alert.createdAt.toISOString(),
+    })),
     page: { number: paging.page, perPage: paging.perPage, total: result.total, hasMore: result.hasMore },
   })
 })

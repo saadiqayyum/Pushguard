@@ -7,7 +7,7 @@ import { rulesFileSchema, type Rule } from "@/schemas/rule"
 // default-rules.test.ts fails if the two drift apart.
 //
 // Org-specific examples from the YAML (repos scoped to acme/*) are deliberately
-// left out — they would match nothing and only clutter a new account's list.
+// left out. They would match nothing and only clutter a new account's list.
 const DEFAULTS = [
   {
     id: "force-push",
@@ -56,6 +56,28 @@ const DEFAULTS = [
     severity: "high",
     added_lines: "eval\\(|new Function\\(|child_process|[A-Za-z0-9+/]{200,}={0,2}",
     paths: ["**/*.js", "**/*.ts", "**/*.mjs", "**/*.cjs"],
+    // The one default that asks a model anything. It is attached to an existing
+    // rule rather than shipped as a tenth: the regex above already decides
+    // whether a ticket is filed, so this adds judgement to tickets that were
+    // going to exist anyway and cannot add noise of its own. It is also the
+    // rule that most needs judgement, minified bundles and vendored code trip
+    // it constantly, and only reading the diff tells those from a payload.
+    ai: "Is this obfuscated or dynamically executed code a deliberate attempt to hide behaviour, or an ordinary build artifact such as a minified bundle, a source map, or a vendored dependency? Say what the code actually does if you can tell.",
+  },
+  {
+    id: "first-push-by-account",
+    description: "An account pushed to this repository for the first time",
+    severity: "medium",
+    when: { sender_first_push: true },
+  },
+  {
+    id: "reviewers-and-ci-in-one-push",
+    description: "One push changed both the review rules and the CI that runs with your secrets",
+    severity: "critical",
+    all_of: [
+      ["CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS", ".github/**/CODEOWNERS"],
+      [".github/workflows/**"],
+    ],
   },
   {
     id: "branch-deleted",

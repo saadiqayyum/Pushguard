@@ -1,12 +1,12 @@
-import { z } from "zod"
+import { z } from "zod";
 
-export const SEVERITIES = ["low", "medium", "high", "critical"] as const
-export const CHANGE_TYPES = ["added", "modified", "removed"] as const
+export const SEVERITIES = ["low", "medium", "high", "critical"] as const;
+export const CHANGE_TYPES = ["added", "modified", "removed"] as const;
 
-const REGEX_MAX_LENGTH = 500
-const GLOB_MAX_LENGTH = 256
+const REGEX_MAX_LENGTH = 500;
+const GLOB_MAX_LENGTH = 256;
 
-const glob = z.string().min(1).max(GLOB_MAX_LENGTH)
+const glob = z.string().min(1).max(GLOB_MAX_LENGTH);
 
 const safeRegex = z
   .string()
@@ -14,13 +14,16 @@ const safeRegex = z
   .max(REGEX_MAX_LENGTH)
   .superRefine((value, ctx) => {
     try {
-      new RegExp(value)
+      new RegExp(value);
     } catch {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Invalid regular expression" })
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Invalid regular expression",
+      });
     }
-  })
+  });
 
-const hour = z.number().int().min(0).max(23)
+const hour = z.number().int().min(0).max(23);
 
 const hourRange = z
   .object({
@@ -30,30 +33,37 @@ const hourRange = z
   .strict()
   .refine((v) => (v.between ? 1 : 0) + (v.not_between ? 1 : 0) === 1, {
     message: "Provide exactly one of between or not_between",
-  })
+  });
 
 export const whenSchema = z
   .object({
     forced: z.boolean().optional(),
+    // True the first time an account pushes to a repository. Answered by the
+    // webhook against stored history, not by the engine, which stays pure.
+    sender_first_push: z.boolean().optional(),
     branch_created: z.boolean().optional(),
     branch_deleted: z.boolean().optional(),
     hour_utc: hourRange.optional(),
   })
   .strict()
-  .refine((v) => Object.keys(v).length > 0, { message: "Empty when block" })
+  .refine((v) => Object.keys(v).length > 0, { message: "Empty when block" });
 
 export const ruleSchema = z
   .object({
     id: z
       .string()
       .max(64)
-      .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, "Use kebab-case: lowercase letters, digits, hyphens"),
+      .regex(
+        /^[a-z0-9]+(-[a-z0-9]+)*$/,
+        "Use kebab-case: lowercase letters, digits, hyphens",
+      ),
     description: z.string().max(500).optional(),
     severity: z.enum(SEVERITIES),
     enabled: z.boolean().default(true),
     repos: z.array(glob).min(1).max(50).optional(),
     branches: z.array(glob).min(1).max(50).optional(),
     paths: z.array(glob).min(1).max(100).optional(),
+    all_of: z.array(z.array(glob).min(1).max(50)).min(2).max(5).optional(),
     exclude_paths: z.array(glob).min(1).max(100).optional(),
     change_type: z.array(z.enum(CHANGE_TYPES)).min(1).max(3).optional(),
     when: whenSchema.optional(),
@@ -61,23 +71,27 @@ export const ruleSchema = z
     ai: z.string().min(10).max(1000).optional(),
   })
   .strict()
-  .refine((r) => r.paths || r.when || r.added_lines || r.ai, {
-    message: "Rule needs at least one condition: paths, when, added_lines, or ai",
+  .refine((r) => r.paths || r.all_of || r.when || r.added_lines || r.ai, {
+    message:
+      "Rule needs at least one condition: paths, all_of, when, added_lines, or ai",
   })
-  .refine((r) => !r.exclude_paths || r.paths, {
-    message: "exclude_paths requires paths",
-  })
+  .refine((r) => !r.exclude_paths || r.paths || r.all_of, {
+    message: "exclude_paths requires paths or all_of",
+  });
 
 export const rulesFileSchema = z.array(ruleSchema).superRefine((rules, ctx) => {
-  const seen = new Set<string>()
+  const seen = new Set<string>();
   for (const rule of rules) {
     if (seen.has(rule.id)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: `Duplicate rule id: ${rule.id}` })
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Duplicate rule id: ${rule.id}`,
+      });
     }
-    seen.add(rule.id)
+    seen.add(rule.id);
   }
-})
+});
 
-export type Rule = z.infer<typeof ruleSchema>
-export type Severity = (typeof SEVERITIES)[number]
-export type ChangeType = (typeof CHANGE_TYPES)[number]
+export type Rule = z.infer<typeof ruleSchema>;
+export type Severity = (typeof SEVERITIES)[number];
+export type ChangeType = (typeof CHANGE_TYPES)[number];

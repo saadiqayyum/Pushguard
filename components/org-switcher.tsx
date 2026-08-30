@@ -25,10 +25,7 @@ export function OrgSwitcher({
   const router = useRouter()
   // Rules and settings act on exactly one org, so "All" is offered only on the
   // alerts feed. Elsewhere the trigger shows the concrete org being edited.
-  const allowAll = usePathname() === "/"
-
-  // One installation means no ambiguity and nothing to switch to.
-  if (orgs.length <= 1) return null
+  const allowAll = usePathname() === "/dashboard"
 
   return (
     <Select
@@ -38,7 +35,7 @@ export function OrgSwitcher({
         router.refresh()
       }}
     >
-      <SelectTrigger size="sm" className="max-w-[14rem] shrink-0 gap-2">
+      <SelectTrigger size="sm" className="min-w-0 max-w-[8rem] shrink gap-2 sm:max-w-[14rem]">
         <Building2 className="size-4 shrink-0 text-muted-foreground" />
         <SelectValue />
       </SelectTrigger>

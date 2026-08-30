@@ -26,3 +26,7 @@ export function parsePaging(
   const perPage = Math.min(toInt(get("perPage"), defaultPerPage), MAX_PER_PAGE)
   return { page, perPage, skip: (page - 1) * perPage }
 }
+
+// How far back a scan reads. Lives here rather than beside the GitHub client so
+// that pages quoting it in copy do not import the Octokit module.
+export const SCAN_COMMIT_WINDOW = 50

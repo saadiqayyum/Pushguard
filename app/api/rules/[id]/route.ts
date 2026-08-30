@@ -3,8 +3,6 @@ import { memberScopes, requireUser } from "@/lib/auth"
 import { rulesCollection, ruleVersionsCollection, serializeRule } from "@/lib/db"
 import { AppError } from "@/lib/errors"
 import { logger } from "@/lib/logger"
-import { notifyRuleChange } from "@/lib/rule-notify"
-import { invalidateRulesCache } from "@/lib/rules"
 import { withErrorHandler } from "@/lib/route"
 import { resolveTenant } from "@/lib/tenant"
 import { updateRuleBody } from "@/schemas/api"
@@ -49,9 +47,6 @@ export const PATCH = withErrorHandler("/api/rules/[id]", async (request, { param
     changedBy: user.login,
     changedAt: now,
   })
-
-  invalidateRulesCache(existing.owner)
-  notifyRuleChange(existing.owner, action, existing.ruleId, user.login)
   logger.info("rule_changed", { owner: existing.owner, ruleId: existing.ruleId, action, by: user.login })
   return NextResponse.json({
     data: serializeRule({ ...existing, body: nextBody, enabled: nextEnabled, updatedAt: now }),

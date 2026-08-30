@@ -3,16 +3,13 @@ import { defaultRules } from "@/lib/default-rules"
 import { logger } from "@/lib/logger"
 import { ruleSchema, type Rule } from "@/schemas/rule"
 
-const CACHE_TTL_MS = 60_000
-
-const cache = new Map<string, { rules: Rule[]; at: number }>()
-
+// Read every time, on purpose. This was a 60-second in-memory cache, which
+// bought one indexed Mongo query and cost a staleness window: invalidation only
+// reached the instance that handled the write, so on any multi-instance deploy a
+// rule somebody disabled. Because it was firing wrongly, kept firing for up to
+// a minute everywhere else. That is the wrong trade for a tool that files
+// tickets naming an account.
 export async function getActiveRules(owner: string): Promise<Rule[]> {
-  const entry = cache.get(owner)
-  if (entry && Date.now() - entry.at < CACHE_TTL_MS) {
-    return entry.rules
-  }
-
   const docs = await (await rulesCollection()).find({ owner, enabled: true }).toArray()
 
   const parsed: Rule[] = []
@@ -22,12 +19,7 @@ export async function getActiveRules(owner: string): Promise<Rule[]> {
     else logger.warn("rule_skipped_invalid", { ruleId: doc.ruleId, issues: result.error.issues.length })
   }
 
-  cache.set(owner, { rules: parsed, at: Date.now() })
   return parsed
-}
-
-export function invalidateRulesCache(owner: string) {
-  cache.delete(owner)
 }
 
 // Give every new account a working rule set. Only runs when the owner has no
@@ -72,8 +64,6 @@ export async function seedDefaultRules(owner: string, by: string): Promise<numbe
     })),
     { ordered: false },
   )
-
-  invalidateRulesCache(owner)
   logger.info("default_rules_seeded", { owner, count: docs.length })
   return docs.length
 }

@@ -1,13 +1,7 @@
 import Image from "next/image"
 import { ArrowUpRight } from "lucide-react"
 import { Button } from "@/components/ui/button"
-
-function installUrl(): string | null {
-  const raw = process.env.NEXT_PUBLIC_GITHUB_APP_SLUG
-  if (!raw) return null
-  const slug = raw.split("/").filter(Boolean).pop()
-  return slug ? `https://github.com/apps/${slug}/installations/new` : null
-}
+import { installUrl } from "@/lib/install-url"
 
 const STEPS = ["Install the app", "Pick repositories", "Alerts flow in"]
 
@@ -41,7 +35,7 @@ export function InstallPrompt() {
       <ol className="flex items-center gap-2 text-xs text-muted-foreground">
         {STEPS.map((step, index) => (
           <li key={step} className="flex items-center gap-2">
-            {index > 0 && <span aria-hidden className="text-border">—</span>}
+            {index > 0 && <span aria-hidden className="text-border">·</span>}
             <span>
               <span className="font-medium text-foreground">{index + 1}.</span> {step}
             </span>

@@ -4,6 +4,7 @@ export type ErrorCode =
   | "invalid_signature"
   | "validation_failed"
   | "not_found"
+  | "install_required"
   | "payload_too_large"
   | "rate_limited"
   | "upstream_github"
@@ -16,6 +17,7 @@ const STATUS: Record<ErrorCode, number> = {
   invalid_signature: 401,
   validation_failed: 422,
   not_found: 404,
+  install_required: 403,
   payload_too_large: 413,
   rate_limited: 429,
   upstream_github: 502,
