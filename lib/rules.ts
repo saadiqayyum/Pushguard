@@ -1,69 +1,125 @@
-import { rulesCollection, ruleVersionsCollection } from "@/lib/db"
-import { defaultRules } from "@/lib/default-rules"
+import { disabledPacksFor, rulesCollection } from "@/lib/db"
+import { catalogById, catalogRules } from "@/lib/rules/catalog"
 import { logger } from "@/lib/logger"
 import { ruleSchema, type Rule } from "@/schemas/rule"
 
-// Read every time, on purpose. This was a 60-second in-memory cache, which
-// bought one indexed Mongo query and cost a staleness window: invalidation only
-// reached the instance that handled the write, so on any multi-instance deploy a
-// rule somebody disabled. Because it was firing wrongly, kept firing for up to
-// a minute everywhere else. That is the wrong trade for a tool that files
-// tickets naming an account.
-export async function getActiveRules(owner: string): Promise<Rule[]> {
-  const docs = await (await rulesCollection()).find({ owner, enabled: true }).toArray()
-
-  const parsed: Rule[] = []
-  for (const doc of docs) {
-    const result = ruleSchema.safeParse(doc.body)
-    if (result.success) parsed.push(result.data)
-    else logger.warn("rule_skipped_invalid", { ruleId: doc.ruleId, issues: result.error.issues.length })
-  }
-
-  return parsed
+export type ResolvedRule = Rule & {
+  /** Where this rule came from, for a UI that has to explain itself. */
+  origin: "catalog" | "modified" | "custom"
 }
 
-// Give every new account a working rule set. Only runs when the owner has no
-// rules at all, so it never resurrects rules someone deliberately deleted and is
-// safe to call from both the installation webhook and the self-registration
-// fallback. No rule-change notifications: that would file one issue per rule.
-export async function seedDefaultRules(owner: string, by: string): Promise<number> {
-  const rules = await rulesCollection()
-  if ((await rules.countDocuments({ owner }, { limit: 1 })) > 0) return 0
+/**
+ * The rule set an account is actually evaluated against: the catalog, with
+ * whatever they changed layered on top.
+ *
+ * The catalog used to be copied into the database for every account at install.
+ * That meant one identical document per rule per account, an improvement to a
+ * rule that could never reach anybody already installed, and a rule set that
+ * could not be read without a database. Now the file is the rule set and the
+ * database holds only differences: an override of a catalog rule, or a rule
+ * somebody wrote themselves.
+ *
+ * An override wins by id, whole. It is stored as a complete rule rather than a
+ * patch because a rule is small and a stored patch would have to be re-applied
+ * against a catalog entry that has since changed, which is how a rule ends up
+ * meaning something nobody chose.
+ *
+ * Read on every push, deliberately, with no cache. This was a 60-second
+ * in-memory cache once: it bought one indexed Mongo query and cost a staleness
+ * window, because invalidation only reached the instance that handled the
+ * write. On any multi-instance deploy a rule somebody disabled, because it was
+ * firing wrongly, kept firing everywhere else for up to a minute. That is the
+ * wrong trade for a tool that files tickets naming an account.
+ */
+export async function resolveRules(owner: string): Promise<ResolvedRule[]> {
+  const [docs, disabledPacks] = await Promise.all([
+    (await rulesCollection()).find({ owner }).toArray(),
+    disabledPacksFor(owner),
+  ])
 
-  const now = new Date()
-  const docs = defaultRules.map((rule) => ({
-    _id: crypto.randomUUID(),
-    owner,
-    ruleId: rule.id,
-    body: rule,
-    enabled: rule.enabled,
-    createdBy: by,
-    createdAt: now,
-    updatedAt: now,
-  }))
-
-  try {
-    // ordered:false so a racing duplicate install does not abort the rest; the
-    // unique {owner, ruleId} index is what makes that safe.
-    await rules.insertMany(docs, { ordered: false })
-  } catch (error) {
-    logger.warn("default_rules_partial_insert", {
-      owner,
-      error: error instanceof Error ? error.message : String(error),
+  const resolved = new Map<string, ResolvedRule>()
+  for (const rule of catalogRules) {
+    const packOff = rule.pack !== undefined && disabledPacks.has(rule.pack)
+    resolved.set(rule.id, {
+      ...rule,
+      enabled: rule.enabled && !packOff,
+      origin: "catalog",
     })
   }
 
-  await (await ruleVersionsCollection()).insertMany(
-    docs.map((doc) => ({
-      _id: crypto.randomUUID(),
-      ruleId: doc._id,
-      body: doc.body,
-      action: "created" as const,
-      changedBy: by,
-      changedAt: now,
-    })),
-    { ordered: false },
+  for (const doc of docs) {
+    const parsed = ruleSchema.safeParse(doc.body)
+    if (!parsed.success) {
+      logger.warn("rule_skipped_invalid", { ruleId: doc.ruleId, issues: parsed.error.issues.length })
+      continue
+    }
+    // `enabled` is read from the document, not the body: toggling a rule off is
+    // the most common override there is, and it must not depend on whoever
+    // wrote the body remembering to keep the two in step.
+    resolved.set(doc.ruleId, {
+      ...parsed.data,
+      enabled: doc.enabled,
+      origin: catalogById.has(doc.ruleId) ? "modified" : "custom",
+    })
+  }
+
+  return [...resolved.values()]
+}
+
+/** What the engine runs. Same resolution, minus everything switched off. */
+export async function getActiveRules(owner: string): Promise<Rule[]> {
+  return (await resolveRules(owner)).filter((rule) => rule.enabled)
+}
+
+/**
+ * The wire shape. `id` is the rule id, not a database id, because most rules
+ * do not have a database row at all until somebody changes one. Everything
+ * addresses a rule by the name it is known by.
+ */
+export function serializeResolvedRule(rule: ResolvedRule) {
+  return {
+    id: rule.id,
+    ruleId: rule.id,
+    pack: rule.pack ?? null,
+    origin: rule.origin,
+    body: rule,
+    enabled: rule.enabled,
+    updatedAt: null as string | null,
+  }
+}
+
+/**
+ * Write an override for a catalog rule, or update one that already exists.
+ *
+ * There is no row to update until this runs. A catalog rule lives in a file, so
+ * the first time anybody edits or disables one, the override is created here.
+ */
+export async function upsertOverride(input: {
+  owner: string
+  ruleId: string
+  body: Rule
+  enabled: boolean
+  by: string
+}): Promise<void> {
+  const now = new Date()
+  await (await rulesCollection()).updateOne(
+    { owner: input.owner, ruleId: input.ruleId },
+    {
+      $set: { body: input.body, enabled: input.enabled, updatedAt: now },
+      $setOnInsert: { _id: crypto.randomUUID(), createdBy: input.by, createdAt: now },
+    },
+    { upsert: true },
   )
-  logger.info("default_rules_seeded", { owner, count: docs.length })
-  return docs.length
+}
+
+/**
+ * Drop an override so the catalog rule applies again.
+ *
+ * Returns false for a rule that has no override, which for a custom rule means
+ * it never existed and for a catalog rule means it was never changed. Both are
+ * already in the state the caller asked for.
+ */
+export async function clearOverride(owner: string, ruleId: string): Promise<boolean> {
+  const result = await (await rulesCollection()).deleteOne({ owner, ruleId })
+  return result.deletedCount > 0
 }

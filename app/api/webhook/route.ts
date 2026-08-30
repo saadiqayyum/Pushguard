@@ -1,6 +1,6 @@
 import { NextResponse, after } from "next/server"
 import { assigneesFor } from "@/lib/alerts"
-import { createAlertIssue } from "@/lib/github"
+import { commitReachedViaPullRequest, createAlertIssue } from "@/lib/github"
 import {
   revokeOrgAccess,
   syncManyRepos,
@@ -23,11 +23,12 @@ import {
   recordPushActor,
   reposCollection,
 } from "@/lib/db"
-import { evaluateRules, type PushContext } from "@/lib/engine"
+import { evaluateRules, needsReviewCheck, type PushContext } from "@/lib/engine"
+import { inspectForcePush } from "@/lib/forensics"
 import { env } from "@/lib/env"
 import { AppError } from "@/lib/errors"
 import { logger } from "@/lib/logger"
-import { getActiveRules, seedDefaultRules } from "@/lib/rules"
+import { getActiveRules } from "@/lib/rules"
 import { withErrorHandler } from "@/lib/route"
 import { verify } from "@octokit/webhooks-methods"
 import {
@@ -49,6 +50,7 @@ import {
 export const maxDuration = 60
 
 const PAYLOAD_MAX_BYTES = 1_000_000
+const EMPTY_SHA = "0".repeat(40)
 
 export const POST = withErrorHandler("/api/webhook", async (request) => {
   const raw = await request.text()
@@ -118,9 +120,9 @@ async function handleInstallation(raw: string): Promise<Response> {
       after(() => syncManyRepos(payload.installation.id, repos))
     }
 
-    // A fresh account with zero rules detects nothing, so ship a working set.
-    // Keyed by the installer: their next org install reuses the same rules.
-    await seedDefaultRules(payload.sender.login, payload.sender.login)
+    // Nothing to seed. The catalog *is* the rule set, so detection is live on
+    // the first push with no write at all; the database only ever holds what
+    // this account later changed.
   } else if (payload.action === "deleted" || payload.action === "suspend") {
     await (await installationsCollection()).updateOne({ org }, { $set: { active: false, updatedAt: now } })
     // Nothing will maintain these projections any more, and a stale access
@@ -525,9 +527,17 @@ async function handlePush(raw: string, deliveryId: string | null): Promise<Respo
     ...(payload.deleted ? { removeBranch: branch } : { addBranch: branch }),
   })
 
-  const context = toContext(payload, senderFirstPush)
   // One rule set per account covers every org it installed on.
   const rules = await getActiveRules(installation.installedBy)
+
+  // The one GitHub call on the fast path, and it is opt-in: nothing asks unless
+  // a rule scoped to this repo and branch tests `unreviewed`.
+  const unreviewed =
+    !payload.deleted && needsReviewCheck(rules, payload.repository.full_name, branch)
+      ? await reviewState(installation.installationId, payload.repository.full_name, payload.after)
+      : null
+
+  const context = toContext(payload, senderFirstPush, unreviewed)
   const matches = evaluateRules(rules, context)
 
   logger.info("push_evaluated", {
@@ -539,11 +549,27 @@ async function handlePush(raw: string, deliveryId: string | null): Promise<Respo
     matches: matches.map((m) => m.rule.id),
   })
 
-  if (matches.length === 0) return new NextResponse(null, { status: 204 })
+  // A force push is inspected even when nothing visible matched. An attacker who
+  // rewrites history to bury a commit leaves a surviving side that is clean by
+  // construction, so returning here on `matches.length === 0` would drop the one
+  // case this whole path exists for.
+  const inspectErasure = payload.forced && payload.before !== EMPTY_SHA && !payload.deleted
+  if (matches.length === 0 && !inspectErasure) return new NextResponse(null, { status: 204 })
 
   after(async () => {
     try {
-      await processMatches(installation, payload, matches)
+      const forensics = inspectErasure
+        ? await inspectForcePush(
+            installation.installationId,
+            context.repo,
+            payload.before,
+            payload.after,
+            rules,
+            context.branch,
+          )
+        : null
+      if (matches.length === 0 && !forensics) return
+      await processMatches(installation, payload, matches, forensics)
     } catch (error) {
       logger.error("alert_processing_failed", {
         deliveryId,
@@ -556,7 +582,21 @@ async function handlePush(raw: string, deliveryId: string | null): Promise<Respo
   return new NextResponse(null, { status: 202 })
 }
 
-function toContext(payload: PushPayload, senderFirstPush: boolean): PushContext {
+/** Null, not false, when GitHub could not answer. See commitReachedViaPullRequest. */
+async function reviewState(
+  installationId: number,
+  repo: string,
+  sha: string,
+): Promise<boolean | null> {
+  const viaPr = await commitReachedViaPullRequest(installationId, repo, sha)
+  return viaPr === null ? null : !viaPr
+}
+
+function toContext(
+  payload: PushPayload,
+  senderFirstPush: boolean,
+  unreviewed: boolean | null,
+): PushContext {
   const files = new Map<string, "added" | "modified" | "removed">()
   for (const commit of payload.commits) {
     for (const path of commit.added) files.set(path, "added")
@@ -570,7 +610,28 @@ function toContext(payload: PushPayload, senderFirstPush: boolean): PushContext 
     senderFirstPush,
     branchCreated: payload.created,
     branchDeleted: payload.deleted,
+    authorMismatch: hasAuthorMismatch(payload),
+    unreviewed,
     hourUtc: new Date().getUTCHours(),
     files: [...files.entries()].map(([path, changeType]) => ({ path, changeType })),
+    commitMessages: payload.commits.map((commit) => commit.message).filter(Boolean),
   }
+}
+
+/**
+ * A commit here names a GitHub account that is not the one that pushed.
+ *
+ * Only `author.username` is compared, which is GitHub's own resolution of the
+ * commit's author email to an account. A commit whose email matches no account
+ * has no username and is skipped: unresolvable is not the same as forged.
+ *
+ * Routine on its own. Merging someone else's pull request pushes their commits
+ * under your credential, and that is most of the mismatches in any repository.
+ * It earns its severity paired with `unreviewed`, where nobody reviewed the code
+ * *and* the commit claims to be somebody else's.
+ */
+function hasAuthorMismatch(payload: PushPayload): boolean {
+  return payload.commits.some(
+    (commit) => commit.author?.username && commit.author.username !== payload.sender.login,
+  )
 }

@@ -1,114 +1,68 @@
-# Pushguard rules, spec by example.
-# Every field except id and severity is optional, but a rule must have at
-# least one condition (paths, when, added_lines, or ai).
+# Pushguard rule format, by example.
+#
+# This is NOT the rule set. Pushguard ships a catalog of rules in
+# lib/rules/catalog/, grouped into packs, and every account is evaluated against
+# it without anything being written to a database. This file documents the
+# format so you can write your own, and is what `npm run validate:rules` checks.
+#
+# Every field except id and severity is optional, but a rule needs at least one
+# condition: paths, all_of, when, added_lines, commit_message, unicode_risk, ai.
 # All fields on a rule AND together; rules evaluate independently (OR).
-# Globs: picomatch syntax. Regex: JS syntax, max 500 chars.
+# Globs: picomatch syntax. Regex: JS syntax, max 500 chars, and checked for
+# catastrophic backtracking when saved.
 # Severity -> action: critical/high = issue + team mention (emails),
 # medium = issue, low = issue for digest triage.
 
-# The original attack: force push by a compromised account.
-- id: force-push
-  description: Any force push to any branch
+# Push conditions. None of these can be answered by a scan, which reads
+# committed code and knows nothing about the push that delivered it.
+- id: example-push-conditions
+  description: Everything the push event itself can be asked about
   severity: critical
+  branches: [main, "release/*"]
   when:
-    forced: true
+    forced: true            # history was rewritten
+    # sender_first_push: true   # this account has never pushed here
+    # branch_created: true
+    # branch_deleted: true
+    # author_mismatch: true     # commit claims an author that is not the pusher
+    # unreviewed: true          # no pull request contains this commit
+    # hour_utc: { not_between: [4, 18] }
 
-# Code that executes on a teammate's machine after pull + install.
-- id: install-hook-added
-  description: npm lifecycle script added or changed
-  severity: critical
-  paths: ["**/package.json"]
-  added_lines: '"(pre|post)install"|"prepare"\s*:'
-
-# CI is code execution with repo secrets.
-- id: workflow-changed
-  description: GitHub Actions workflow created or modified
+# File conditions. `repos` binds a rule to one organisation or repository.
+- id: example-file-conditions
+  description: Which files changed, and how
   severity: high
-  paths: [".github/workflows/**"]
-  change_type: [added, modified]
+  repos: ["acme/*"]
+  paths: [".github/workflows/**", "**/*.ts"]
+  exclude_paths: ["**/*.test.ts"]
+  change_type: [added, modified]   # or [removed]
 
-# Deleting protections is the step before the attack.
-- id: protection-removed
-  description: Workflow, CODEOWNERS, or hook config deleted
-  severity: critical
-  paths: [".github/workflows/**", "CODEOWNERS", ".github/CODEOWNERS", ".husky/**"]
-  change_type: [removed]
-
-# Editor-trust vectors: runs when a teammate opens the project.
-- id: editor-autorun-changed
-  description: VS Code tasks or settings modified
-  severity: high
-  paths: [".vscode/tasks.json", ".vscode/settings.json"]
-
-- id: env-file-committed
-  description: Dotenv file pushed to the repo
-  severity: critical
-  paths: ["**/.env", "**/.env.*"]
-  exclude_paths: ["**/.env.example", "**/.env.sample"]
-  change_type: [added, modified]
-
-- id: obfuscated-payload
-  description: Long base64 blob or dynamic code execution added
-  severity: high
-  added_lines: 'eval\(|new Function\(|child_process|[A-Za-z0-9+/]{200,}={0,2}'
-  paths: ["**/*.js", "**/*.ts", "**/*.mjs", "**/*.cjs"]
-  # `ai` runs only after the regex above has already matched, and only on the
-  # push path. It needs a diff, so a scan drops it. The verdict is advisory:
-  # it annotates the ticket and can never stop one being filed.
-  ai: >-
-    Is this obfuscated or dynamically executed code a deliberate attempt to hide behaviour, or an ordinary build artifact such as a minified bundle, a source map, or a vendored dependency? Say what the code actually does if you can tell.
-
-# Scoped rule: one team, one folder, AI review on top.
-- id: payments-critical-path
-  description: Changes to charge logic get an AI review
-  severity: high
-  repos: ["acme/payments-api", "acme/billing-*"]
-  branches: ["main", "release/*"]
-  paths: ["src/charges/**"]
-  ai: >
-    Does this diff alter payment amounts, currency handling, destination
-    accounts, or disable validation? Answer with a risk level and one
-    sentence of reasoning.
-
-# Watch rule: a single file under repeated attack. Costs zero API calls.
-- id: watch-session-auth
-  description: Any touch of the session auth module
-  severity: critical
-  repos: ["acme/api"]
-  paths: ["src/auth/session.ts"]
-
-# Push-behaviour rules. These ask about the act of pushing rather than about the
-# code, which is the one thing a code scanner cannot see.
-
-# Not suspicious alone, context for everything else in the feed. Answered from
-# stored history, so it never fires in a scan.
-- id: first-push-by-account
-  description: An account pushed to this repository for the first time
-  severity: medium
-  when:
-    sender_first_push: true
-
-# `all_of` groups must EACH be matched by at least one changed file in the SAME
-# push. Editing CI is routine. Editing CI in the push that also changes who
-# reviews it is the shape of removing the person who would have noticed.
-- id: reviewers-and-ci-in-one-push
-  description: One push changed both the review rules and the CI that runs with your secrets
+# all_of: each group must be hit by a file in the SAME push. Either area alone
+# is routine; together they are somebody widening what they can merge and what
+# runs with your secrets.
+- id: example-all-of
+  description: Two areas changed in one push
   severity: critical
   all_of:
-    - ["CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS", ".github/**/CODEOWNERS"]
+    - [CODEOWNERS, .github/CODEOWNERS]
     - [".github/workflows/**"]
 
-- id: branch-deleted
-  description: Branch deleted on a protected-pattern name
-  severity: medium
-  branches: ["main", "release/*"]
-  when:
-    branch_deleted: true
+# Content conditions. `added_lines` needs a diff, `commit_message` does not.
+# `ai` asks Claude about the diff and may only add risk, never clear a push.
+- id: example-content-conditions
+  description: What the change actually says
+  severity: critical
+  paths: ["**/package.json"]
+  added_lines: '"(pre|post)install"\s*:'
+  # commit_message: '^Merge pull request #\d+'
+  # unicode_risk: controls      # bidi overrides, invisible characters
+  # unicode_risk: confusables   # the above plus homoglyphs
+  ai: Does this script download or execute anything at install time?
 
-- id: off-hours-push
-  description: Push outside 04:00-18:00 UTC working window
+# enabled: false ships a rule switched off. Useful for one that is right for
+# some teams and noise for others.
+- id: example-disabled
+  description: Present but not firing until somebody turns it on
   severity: low
-  branches: ["main"]
-  when:
-    hour_utc:
-      not_between: [4, 18]
+  enabled: false
+  added_lines: "TODO|FIXME"

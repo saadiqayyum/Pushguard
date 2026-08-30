@@ -2,7 +2,8 @@ import { redirect } from "next/navigation"
 import { RulesView } from "@/components/rules-view"
 import type { RuleRow } from "@/components/rule-types"
 import { auth, memberScopes } from "@/lib/auth"
-import { rulesCollection, serializeRule } from "@/lib/db"
+import { resolveRules, serializeResolvedRule } from "@/lib/rules"
+import { catalogRules, PACKS } from "@/lib/rules/catalog"
 import { parsePaging } from "@/lib/paging"
 import { resolveTenant } from "@/lib/tenant"
 
@@ -37,16 +38,20 @@ export default async function RulesPage({
 
   let rows: RuleRow[] = []
   let total = 0
+  let catalogActive = 0
   let loadError = false
   try {
-    const rules = await rulesCollection()
-    const owner = tenant.current.installedBy
-    const [docs, count] = await Promise.all([
-      rules.find({ owner }).sort({ ruleId: 1 }).skip(paging.skip).limit(paging.perPage).toArray(),
-      rules.countDocuments({ owner }),
-    ])
-    rows = docs.map(serializeRule)
-    total = count
+    // The catalog plus this account's changes, not the collection: querying the
+    // table would show only the rules somebody has edited.
+    const all = (await resolveRules(tenant.current.installedBy)).sort((a, b) =>
+      a.id.localeCompare(b.id),
+    )
+    // Only what this account wrote or changed. The catalog is active either
+    // way, and putting all 76 rows here hid the few that are actually theirs.
+    const resolved = all.filter((rule) => rule.origin !== "catalog")
+    rows = resolved.slice(paging.skip, paging.skip + paging.perPage).map(serializeResolvedRule)
+    total = resolved.length
+    catalogActive = all.filter((rule) => rule.origin === "catalog" && rule.enabled).length
   } catch {
     loadError = true
   }
@@ -55,6 +60,9 @@ export default async function RulesPage({
     <RulesView
       orgs={tenant.installations.map((i) => i.org)}
       initialRules={rows}
+      catalog={catalogRules}
+      catalogPacks={[...PACKS]}
+      catalogActive={catalogActive}
       loadError={loadError}
       paging={{ ...paging, total, hasMore: paging.skip + rows.length < total }}
       scopeOptions={scopeOptions(tenant.installations)}

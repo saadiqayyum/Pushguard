@@ -38,6 +38,7 @@ import { api, ApiClientError } from "@/lib/api-client";
 import type { Rule, Severity } from "@/schemas/rule";
 import type { RuleRow } from "@/components/rule-types";
 import { ImportRulesDialog } from "@/components/import-rules-dialog";
+import { CatalogDialog, type CatalogPack } from "@/components/catalog-dialog";
 import { PageHeader } from "@/components/page-header";
 import { TableToolbar } from "@/components/table-toolbar";
 import { SeverityBadge } from "@/components/severity-badge";
@@ -46,12 +47,20 @@ import { TableShell } from "@/components/table-shell";
 export function RulesView({
   orgs,
   initialRules,
+  catalog,
+  catalogPacks,
+  catalogActive,
   loadError,
   paging,
   scopeOptions,
 }: {
   orgs: string[];
   initialRules: RuleRow[];
+  /** Every rule Pushguard ships, for the picker. Not rows in this table. */
+  catalog: Rule[];
+  catalogPacks: CatalogPack[];
+  /** Catalog rules running right now, whether or not anyone has looked at them. */
+  catalogActive: number;
   loadError: boolean;
   paging: { page: number; perPage: number; total: number; hasMore: boolean };
   scopeOptions: ScopeOption[];
@@ -103,7 +112,26 @@ export function RulesView({
         }
       >
         <ImportRulesDialog />
+        <CatalogDialog
+          rules={catalog}
+          packs={catalogPacks}
+          onSelect={(rule) => setMode({ kind: "duplicate", rule })}
+        />
       </TableToolbar>
+
+      {!loadError && initialRules.length === 0 && (
+        <Card>
+          <CardContent className="space-y-1 text-sm text-muted-foreground">
+            <p className="font-medium text-foreground">
+              {catalogActive} catalog rules are running on every push.
+            </p>
+            <p>
+              They ship with Pushguard, so there is nothing to set up. This table lists only rules
+              you write or change. Browse the catalog to start your own from one.
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       {loadError && (
         <Card>
@@ -143,7 +171,19 @@ export function RulesView({
             return (
               <TableRow key={row.id}>
                 <TableCell>
-                  <p className="font-medium">{row.ruleId}</p>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <p className="font-medium">{row.ruleId}</p>
+                    {row.pack ? (
+                      <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                        {row.pack}
+                      </span>
+                    ) : null}
+                    {row.origin !== "catalog" ? (
+                      <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                        {row.origin === "modified" ? "edited" : "custom"}
+                      </span>
+                    ) : null}
+                  </div>
                   {rule.description ? (
                     <p className="max-w-md truncate text-xs text-muted-foreground">
                       {rule.description}
@@ -160,7 +200,9 @@ export function RulesView({
                       server's locale during SSR and the browser's on hydration,
                       which React reports as a hydration mismatch. */}
                 <TableCell className="hidden text-xs text-muted-foreground md:table-cell">
-                  {row.updatedAt.slice(0, 10)}
+                  {/* Null while a catalog rule is untouched: it ships with the
+                      code and has never been written to the database. */}
+                  {row.updatedAt ? row.updatedAt.slice(0, 10) : "shipped"}
                 </TableCell>
                 <TableCell className="text-right">
                   <div className="flex items-center justify-end gap-2">

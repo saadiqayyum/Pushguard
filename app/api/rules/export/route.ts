@@ -1,7 +1,7 @@
 import { stringify } from "yaml"
 import { memberScopes, requireUser } from "@/lib/auth"
 import { rulesCollection } from "@/lib/db"
-import { defaultRules } from "@/lib/default-rules"
+import { catalogRules } from "@/lib/rules/catalog"
 import { AppError } from "@/lib/errors"
 import { withErrorHandler } from "@/lib/route"
 import { resolveTenant } from "@/lib/tenant"
@@ -30,7 +30,7 @@ const HEADER = [
 export const GET = withErrorHandler("/api/rules/export", async (request) => {
   const example = new URL(request.url).searchParams.get("example") === "1"
 
-  let rules: Rule[] = defaultRules
+  let rules: Rule[] = catalogRules
   let filename = "pushguard-rules.example.yaml"
 
   if (!example) {

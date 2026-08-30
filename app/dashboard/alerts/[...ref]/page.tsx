@@ -83,7 +83,9 @@ export default async function AlertPage({ params }: { params: Promise<{ ref: str
       {alert.push && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">The push</CardTitle>
+            <CardTitle className="text-base">
+              {(alert.occurrences ?? 1) > 1 ? "The push that opened this" : "The push"}
+            </CardTitle>
           </CardHeader>
           <CardContent className="space-y-1.5 text-sm">
             <Row label="Pushed by">
@@ -99,6 +101,39 @@ export default async function AlertPage({ params }: { params: Promise<{ ref: str
                 </a>
               </Row>
             )}
+          </CardContent>
+        </Card>
+      )}
+
+      {(alert.sightings ?? []).length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">
+              Seen again {alert.sightings!.length}×
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-1.5 text-sm">
+            {/* The card above is the push that opened the issue and never
+                changes. These are the later ones, which are different commits
+                by possibly different accounts. */}
+            {alert.sightings!.map((sighting, index) => (
+              <Row key={index} label={formatTimestamp(sighting.at)}>
+                <span className="flex flex-wrap items-center gap-x-2">
+                  <span>{sighting.ruleIds.join(", ")}</span>
+                  {sighting.by && <span className="text-muted-foreground">@{sighting.by}</span>}
+                  {sighting.sha && (
+                    <a
+                      href={`https://github.com/${alert.repo}/commit/${sighting.sha}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="font-mono text-xs underline"
+                    >
+                      {sighting.sha.slice(0, 7)}
+                    </a>
+                  )}
+                </span>
+              </Row>
+            ))}
           </CardContent>
         </Card>
       )}

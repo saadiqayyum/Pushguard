@@ -1,5 +1,13 @@
 import { resolveAlertTarget } from "@/lib/alert-target"
-import { compareLink, findingsMarkdown, SEVERITY_ORDER, toFinding, topSeverity } from "@/lib/finding"
+import {
+  compareLink,
+  erasureMarkdown,
+  findingsMarkdown,
+  SEVERITY_ORDER,
+  toFinding,
+  topSeverity,
+  type ForcePushForensics,
+} from "@/lib/finding"
 import { analyzeDiff } from "@/lib/ai"
 import {
   alertExistsForCommit,
@@ -26,9 +34,30 @@ const EMPTY_SHA = "0".repeat(40)
  * of the opening post. What a reader needs is who did it again, where, and a
  * link to look.
  */
-function buildRepeat(payload: PushPayload): string {
+function buildRepeat(
+  payload: PushPayload,
+  forensics: ForcePushForensics | null,
+  redactContent: boolean,
+): string {
   const branch = payload.ref.replace("refs/heads/", "")
-  return `Seen again on \`${branch}\` by @${payload.sender.login}, ${reviewLink(payload)}`
+  const lines = [`Seen again on \`${branch}\` by @${payload.sender.login}, ${reviewLink(payload)}`]
+
+  // The exception to "a repeat is a reference, not a re-report". Every force
+  // push orphans a *different* set of commits, so this is new evidence each
+  // time and not a restatement of the opening post. It also cannot wait for a
+  // new issue: `force-push` is in the rule set of every one of these, and
+  // openAlertForRules threads on any overlap, so the first alert in a repo
+  // absorbs every force push after it. Dropping the erasure here would mean
+  // only ever reporting the first one.
+  if (forensics) {
+    lines.push(
+      ...erasureMarkdown(forensics, payload.repository.full_name, payload.before),
+      "",
+      "### Rules matched against the erased content",
+      ...findingsMarkdown(forensics.findings, redactContent),
+    )
+  }
+  return lines.join("\n")
 }
 
 export type FiledAlert = { number: number; url: string; threaded: boolean }
@@ -57,10 +86,19 @@ export async function fileOrThreadAlert(input: {
   repeat: string
   assignees?: string[]
   push?: AlertDoc["push"]
+  /** Who filed it, when there is no push to name. Scans only. */
+  by?: string
 }): Promise<FiledAlert> {
   const existing = await openAlertForRules(input.target, input.ruleIds)
   if (existing) {
-    const seen = await recordOccurrence(existing._id)
+    // Recorded per sighting rather than only counted: the alert's own ruleIds,
+    // findings and push never change after it is opened, so without this a
+    // recurrence is invisible except as a number going up.
+    const seen = await recordOccurrence(existing._id, {
+      ruleIds: input.ruleIds,
+      sha: input.push?.after ?? null,
+      by: input.push?.sender ?? input.by ?? null,
+    })
     await commentOnIssue(
       input.installationId,
       input.target,
@@ -72,6 +110,11 @@ export async function fileOrThreadAlert(input: {
       issue: existing.number,
       occurrence: seen,
       source: input.source,
+      // Why this became a comment instead of an issue. Threading is decided by
+      // whether the open alert already covers every rule now firing, and
+      // without both lists the decision is invisible from the logs.
+      rules: input.ruleIds,
+      coveredBy: existing.ruleIds,
     })
     return { number: existing.number, url: existing.url, threaded: true }
   }
@@ -105,24 +148,28 @@ export async function fileOrThreadAlert(input: {
   return { number: issue.number, url: issue.html_url, threaded: false }
 }
 
+/**
+ * `forensics` is what a force push removed, already matched against the rules.
+ * It arrives as a separate argument rather than being fetched here because it
+ * can be the *only* reason an alert exists: an attacker who force-pushes to
+ * hide a commit leaves a surviving side that matches nothing, which is the
+ * whole point of doing it.
+ */
 export async function processMatches(
   installation: InstallationDoc,
   payload: PushPayload,
   matches: RuleMatch[],
+  forensics: ForcePushForensics | null = null,
 ): Promise<void> {
   const repo = payload.repository.full_name
   const sha = payload.after
   const { installationId } = installation
 
   const target = resolveAlertTarget(repo, payload.repository.private)
-  if (!target) {
-    logger.warn("alert_skipped_public_repo_unconfigured", { org: installation.org, repo, sha })
-    return
-  }
 
   // Redelivered webhook or a retry: this exact commit was already reported.
   // A local read rather than a GitHub issue search, reads do not call GitHub.
-  if (await alertExistsForCommit(target, sha)) {
+  if (await alertExistsForCommit(target.repo, sha)) {
     logger.info("alert_deduplicated", { repo, sha })
     return
   }
@@ -134,7 +181,10 @@ export async function processMatches(
     : null
 
   const confirmed = confirmContentMatches(matches, diff?.addedLines ?? null)
-  if (confirmed.length === 0) {
+  // An erasure finding stands on its own. The surviving side of a force push
+  // that was made to hide something matches nothing by design, so dismissing on
+  // the visible push alone would drop exactly the alerts worth filing.
+  if (confirmed.length === 0 && !forensics) {
     logger.info("alert_dismissed_no_content_match", { repo, sha })
     return
   }
@@ -150,8 +200,24 @@ export async function processMatches(
     )
   }
 
-  const ruleIds = confirmed.map((m) => m.rule.id)
-  const severity = topSeverity(confirmed.map((m) => m.rule.severity))
+  const findings = [
+    ...confirmed.map((match) =>
+      // A matched commit message is evidence exactly like a matched diff line.
+      toFinding(match.rule, repo, match.matchedFiles, [...match.matchedMessages, ...match.matchedLines]),
+    ),
+    ...(forensics?.findings ?? []),
+  ]
+  // Deduped: the same rule can match on both sides of a rewrite, and a repeated
+  // id would both bloat the title and confuse the threading lookup.
+  const ruleIds = [...new Set(findings.map((finding) => finding.ruleId))]
+  const severity = topSeverity(findings.map((finding) => finding.severity))
+  // Both sources can only ever be empty together, but this files GitHub issues:
+  // an empty rule list would open one titled after nothing and thread against
+  // every other empty-ruled alert in the repo.
+  if (findings.length === 0) {
+    logger.info("alert_dismissed_no_findings", { repo, sha })
+    return
+  }
   const mention =
     SEVERITY_ORDER.indexOf(severity) >= SEVERITY_ORDER.indexOf("high")
       ? installation.alertMention ?? undefined
@@ -159,14 +225,14 @@ export async function processMatches(
 
   const filed = await fileOrThreadAlert({
     installationId,
-    target,
+    target: target.repo,
     severity,
     ruleIds,
-    findings: confirmed.map((match) => toFinding(match.rule, repo, match.matchedFiles, match.matchedLines)),
+    findings,
     source: "push",
     title: `[${severity}] ${repo}: ${ruleIds.join(", ")}`,
-    body: buildBody(payload, confirmed, aiSections, diff?.truncated ?? false, mention),
-    repeat: buildRepeat(payload),
+    body: buildBody(payload, confirmed, aiSections, diff?.truncated ?? false, mention, forensics, target.redactContent),
+    repeat: buildRepeat(payload, forensics, target.redactContent),
     assignees: assigneesFor(installation.alertMention),
     push: {
       branch: payload.ref.replace("refs/heads/", ""),
@@ -177,7 +243,14 @@ export async function processMatches(
       forced: payload.forced,
     },
   })
-  logger.info("push_alert_filed", { repo, target, sha, issue: filed.number, threaded: filed.threaded })
+  logger.info("push_alert_filed", {
+    repo,
+    target: target.repo,
+    sha,
+    issue: filed.number,
+    threaded: filed.threaded,
+    erased: forensics?.erasedCommitCount ?? 0,
+  })
 
 }
 
@@ -210,6 +283,8 @@ function buildBody(
   aiSections: string[],
   truncated: boolean,
   mention?: string,
+  forensics?: ForcePushForensics | null,
+  redactContent = false,
 ): string {
   const branch = payload.ref.replace("refs/heads/", "")
   const lines = [
@@ -223,14 +298,30 @@ function buildBody(
     `| Force push | ${payload.forced ? "yes" : "no"} |`,
     `| Before | ${payload.before === EMPTY_SHA ? ", (branch created)" : payload.before} |`,
     `| After | ${payload.after} |`,
-    "",
-    "### Matched rules",
-    ...findingsMarkdown(
-      matches.map((m) =>
-        toFinding(m.rule, payload.repository.full_name, m.matchedFiles, m.matchedLines),
-      ),
-    ),
   ]
+  if (matches.length > 0) {
+    lines.push(
+      "",
+      "### Matched rules",
+      ...findingsMarkdown(
+        matches.map((m) =>
+          toFinding(m.rule, payload.repository.full_name, m.matchedFiles, [
+            ...m.matchedMessages,
+            ...m.matchedLines,
+          ]),
+        ),
+        redactContent,
+      ),
+    )
+  }
+  if (forensics) {
+    lines.push(
+      ...erasureMarkdown(forensics, payload.repository.full_name, payload.before),
+      "",
+      "### Rules matched against the erased content",
+      ...findingsMarkdown(forensics.findings, redactContent),
+    )
+  }
   if (aiSections.length > 0) lines.push("", ...aiSections)
   if (truncated) lines.push("", "Diff exceeded the size cap and was truncated; review the full compare on GitHub.")
   if (payload.before === EMPTY_SHA) {

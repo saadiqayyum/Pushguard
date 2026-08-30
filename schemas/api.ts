@@ -1,8 +1,9 @@
 import { z } from "zod"
 import { ruleSchema } from "@/schemas/rule"
+import { checkedRuleSchema } from "@/schemas/rule-safety"
 
 // No org: rules belong to the caller's account and apply to all of its orgs.
-export const createRuleBody = z.object({ rule: ruleSchema }).strict()
+export const createRuleBody = z.object({ rule: checkedRuleSchema }).strict()
 
 // No free text. The client picks from what GitHub said the user can reach, and
 // the server re-checks the choice against that same list. An installation id
@@ -47,7 +48,7 @@ export const importRulesBody = z.object({ content: z.string().min(1).max(200_000
 
 export const updateRuleBody = z
   .object({
-    rule: ruleSchema.optional(),
+    rule: checkedRuleSchema.optional(),
     enabled: z.boolean().optional(),
   })
   .strict()
@@ -66,6 +67,9 @@ export const testRuleBody = z
         senderFirstPush: z.boolean().default(false),
         branchCreated: z.boolean().default(false),
         branchDeleted: z.boolean().default(false),
+        authorMismatch: z.boolean().default(false),
+        unreviewed: z.boolean().nullable().default(null),
+        commitMessages: z.array(z.string()).max(50).default([]),
         files: z
           .array(
             z.object({
@@ -83,6 +87,9 @@ export const testRuleBody = z
         senderFirstPush: false,
         branchCreated: false,
         branchDeleted: false,
+        authorMismatch: false,
+        unreviewed: null,
+        commitMessages: [],
         files: [],
       })),
   })

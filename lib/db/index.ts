@@ -20,8 +20,17 @@ export type RuleDoc = {
 export type RuleVersionDoc = {
   _id: string
   ruleId: string
-  body: Rule
-  action: "created" | "updated" | "enabled" | "disabled"
+  /**
+   * The rule as of this change. Null only on `deleted`, where a rule somebody
+   * wrote is gone and there is no later state to record.
+   */
+  body: Rule | null
+  /**
+   * `reverted` drops an edit to a catalog rule so the shipped one applies
+   * again; `deleted` removes a rule somebody wrote here. Both arrive through
+   * the same call, and the history has to say which happened.
+   */
+  action: "created" | "updated" | "enabled" | "disabled" | "reverted" | "deleted"
   changedBy: string
   changedAt: Date
 }
@@ -206,6 +215,16 @@ export type AlertDoc = {
   source: "push" | "scan"
   /** How many times these rules have fired here since the issue was opened. */
   occurrences: number
+  /**
+   * What each of those firings actually was, newest last.
+   *
+   * The count on its own was misleading: `ruleIds`, `findings` and `push` are
+   * all frozen at creation, so an alert read "seen 3x" while still showing the
+   * first push's rules, sender and lines. Every later sighting is a different
+   * commit by a possibly different account, and triage needs that, not a
+   * tally. Capped like `comments`: a mirror, not an archive.
+   */
+  sightings?: { at: Date; ruleIds: string[]; sha: string | null; by: string | null }[]
   lastSeenAt: Date
   state: "open" | "closed"
   /** First human action, comment, assignment, close. Null while untouched. */
@@ -300,6 +319,50 @@ export async function rulesCollection(): Promise<Collection<RuleDoc>> {
   return (await connect()).collection<RuleDoc>("rules")
 }
 
+/**
+ * A whole catalog pack switched off for one account.
+ *
+ * One document per disabled pack, and only when somebody disables one. The
+ * alternative was writing an override for every rule in the pack, which is the
+ * per-account duplication the catalog exists to avoid.
+ */
+export type DisabledPackDoc = {
+  /** `${owner}\u0000${pack}`. */
+  _id: string
+  owner: string
+  pack: string
+  disabledBy: string
+  disabledAt: Date
+}
+
+export async function disabledPacksCollection(): Promise<Collection<DisabledPackDoc>> {
+  return (await connect()).collection<DisabledPackDoc>("disabled_packs")
+}
+
+export async function disabledPacksFor(owner: string): Promise<Set<string>> {
+  const docs = await (await disabledPacksCollection()).find({ owner }).toArray()
+  return new Set(docs.map((doc) => doc.pack))
+}
+
+export async function setPackEnabled(
+  owner: string,
+  pack: string,
+  enabled: boolean,
+  by: string,
+): Promise<void> {
+  const packs = await disabledPacksCollection()
+  const _id = `${owner}\u0000${pack}`
+  if (enabled) {
+    await packs.deleteOne({ _id })
+    return
+  }
+  await packs.updateOne(
+    { _id },
+    { $set: { owner, pack, disabledBy: by, disabledAt: new Date() } },
+    { upsert: true },
+  )
+}
+
 export async function ruleVersionsCollection(): Promise<Collection<RuleVersionDoc>> {
   return (await connect()).collection<RuleVersionDoc>("rule_versions")
 }
@@ -319,9 +382,21 @@ export async function installationsCollection(): Promise<Collection<Installation
  * A Mongo lookup rather than a GitHub issue search: it is a read, and reads do
  * not call GitHub.
  */
+/**
+ * The open alert that already covers every rule now firing, if there is one.
+ *
+ * `$all`, not `$in`. Overlap is not recurrence: a push that fires `force-push`
+ * plus a rule nobody has seen before is a new finding that happens to share one
+ * id with an old ticket, and `$in` filed it as "occurrence 2" of that ticket.
+ * Because `force-push` fires on every force push, the first such issue in a
+ * repository became a permanent catch-all that swallowed every later alert
+ * carrying it, however severe. Requiring the open alert to already contain the
+ * whole rule set means a genuine repeat threads and anything new opens its own
+ * issue.
+ */
 export async function openAlertForRules(repo: string, ruleIds: string[]): Promise<AlertDoc | null> {
   return (await alertsCollection()).findOne(
-    { repo, state: "open", archivedAt: null, ruleIds: { $in: ruleIds } },
+    { repo, state: "open", archivedAt: null, ruleIds: { $all: ruleIds } },
     // Oldest first: the original is the one to add to. Threading onto the
     // newest would leave the first report. The one nobody has read, buried
     // under its own repeats.
@@ -340,10 +415,19 @@ export async function alertExistsForCommit(repo: string, sha: string): Promise<b
 }
 
 /** Another sighting of something already open. */
-export async function recordOccurrence(id: string): Promise<number> {
+const MAX_SIGHTINGS = 20
+
+export async function recordOccurrence(
+  id: string,
+  sighting: { ruleIds: string[]; sha: string | null; by: string | null },
+): Promise<number> {
   const updated = await (await alertsCollection()).findOneAndUpdate(
     { _id: id },
-    { $inc: { occurrences: 1 }, $set: { lastSeenAt: new Date(), updatedAt: new Date() } },
+    {
+      $inc: { occurrences: 1 },
+      $push: { sightings: { $each: [{ ...sighting, at: new Date() }], $slice: -MAX_SIGHTINGS } },
+      $set: { lastSeenAt: new Date(), updatedAt: new Date() },
+    },
     { returnDocument: "after" },
   )
   return updated?.occurrences ?? 1
@@ -401,6 +485,7 @@ export async function recordAlert(
     | "lastSeenAt"
     | "activity"
     | "comments"
+    | "sightings"
     | "updatedAt"
   >,
 ): Promise<void> {
@@ -416,6 +501,7 @@ export async function recordAlert(
         assignees: [],
         activity: [],
         comments: [],
+        sightings: [],
         archivedAt: null,
         archivedBy: null,
         occurrences: 1,

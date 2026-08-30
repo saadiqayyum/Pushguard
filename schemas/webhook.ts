@@ -2,6 +2,21 @@ import { z } from "zod";
 
 const commitSchema = z.object({
   id: z.string(),
+  // Kept because a message is evidence, not decoration. A direct push whose
+  // commit reads "Merge pull request #15 from ..." renders in GitHub's timeline
+  // next to real merges and reads as reviewed code; nothing about the push
+  // itself gives that away.
+  message: z.string().default(""),
+  // Git lets any author name be set locally, so this is what the commit
+  // *claims*. `sender.login` on the push is what GitHub authenticated. The gap
+  // between the two is the signal.
+  author: z
+    .object({
+      name: z.string().optional(),
+      email: z.string().nullish(),
+      username: z.string().optional(),
+    })
+    .optional(),
   added: z.array(z.string()).default([]),
   modified: z.array(z.string()).default([]),
   removed: z.array(z.string()).default([]),

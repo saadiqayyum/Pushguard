@@ -7,12 +7,12 @@ import { logger } from "@/lib/logger"
 import { withErrorHandler } from "@/lib/route"
 import { resolveTenant } from "@/lib/tenant"
 import { importRulesBody } from "@/schemas/api"
-import { rulesFileSchema } from "@/schemas/rule"
+import { checkedRulesFileSchema } from "@/schemas/rule-safety"
 
 /**
  * Bulk import, YAML or JSON.
  *
- * The same `rulesFileSchema` the repository's own `rules.example.yaml` is
+ * The same `checkedRulesFileSchema` the repository's own `rules.example.yaml` is
  * validated against, so a file generated elsewhere is held to exactly the
  * documented contract: a bad regex or an unknown field is refused here rather
  * than failing silently on the next push.
@@ -37,7 +37,7 @@ export const POST = withErrorHandler("/api/rules/import", async (request) => {
     throw new AppError("validation_failed", `Could not read the file: ${(error as Error).message}`)
   }
 
-  const rules = rulesFileSchema.parse(parsed)
+  const rules = checkedRulesFileSchema.parse(parsed)
   if (rules.length === 0) throw new AppError("validation_failed", "No rules in that file")
 
   const collection = await rulesCollection()

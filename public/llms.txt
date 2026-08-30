@@ -1,0 +1,101 @@
+# Pushguard
+
+> Org-wide push monitoring for GitHub. One GitHub App install watches every repository in your organization, evaluates each push against your detection rules, and files a GitHub issue naming the pushing account when something looks wrong: force pushes, new install hooks, workflow tampering, committed secrets, or obfuscated payloads.
+
+Built for the attack where a compromised teammate account force-pushes code that
+executes on everyone else's machine at the next `git pull && npm install`.
+
+Two ways in. Watching is the product; scanning is how you see what it finds
+before you install anything.
+
+- **Watch**: push -> webhook -> rule engine -> diff fetch only if a rule needs
+  one -> optional AI review -> issue in the repository that was pushed.
+- **Scan**: reads the last 50 commits already committed to a branch, stores
+  findings, files nothing on GitHub until you say so.
+
+Key properties, because they are the questions people actually ask:
+
+- Rules belong to your account, not one organization. One rule set is evaluated
+  against every org you installed on; narrow a rule with its `repos` globs.
+- Alerts are GitHub issues, filed in the repository that triggered them, public
+  or private. A public repository gets the alert but not the evidence: matched
+  lines are withheld so an alert about a committed secret does not become an
+  indexed copy of it. High and critical alerts @mention your alert contact.
+- Authorization is GitHub's answer, not ours. A scan is authorized against the
+  requesting user's own GitHub token, never the installation token, which sees
+  more than any single member is entitled to.
+- Force pushes are read from the orphaned side. A rewrite makes the old tip
+  unreachable, so a checkout, and every scanner reading one, sees only the
+  survivors. Pushguard compares in both directions and runs content rules
+  against the difference, reporting what a force push *erased* rather than only
+  that it happened. A secret committed and then force-pushed away is still
+  leaked, and this is what reports it.
+- Path rules cost zero GitHub API calls; the webhook payload already lists
+  changed files. Content rules fetch one compare diff, capped at 50 KB.
+- AI review is advisory and escalate-only. A rule match files a ticket
+  regardless of what the AI says about the diff.
+- No cache and no TTL anywhere. Stored GitHub data is a projection maintained by
+  webhooks, not a copy with a guess about when it went stale.
+- Limits: 25 scans a day, 20 repositories each, one at a time per account.
+- Multi-tenant. One deployment serves any number of organizations.
+- Self-hostable, MIT licensed, Next.js and MongoDB.
+
+## Product
+
+- [Home](/): what Pushguard detects and why force-push attacks matter.
+- [How to use](/how-to-use): five steps from install to first alert.
+- [Dashboard](/dashboard): alert feed, scans, and rule editing. Requires GitHub sign-in.
+
+## Rules
+
+A rule is YAML. All conditions on it must hold; each rule is evaluated
+independently.
+
+| Field | Meaning |
+|---|---|
+| `repos`, `branches` | glob scoping, empty means all; `acme/*` binds a rule to one org |
+| `paths`, `exclude_paths`, `change_type` | changed-file conditions |
+| `all_of` | groups of globs, each of which must be matched by a file in the same push |
+| `when` | push conditions: `forced`, `sender_first_push`, `branch_created`, `branch_deleted`, `hour_utc`, `author_mismatch`, `unreviewed` |
+| `added_lines` | regex against added diff lines, case-sensitive, no flags |
+| `commit_message` | regex against each commit's subject line |
+| `unicode_risk` | `controls` for Trojan Source (bidi overrides, invisible characters), `confusables` adds homoglyphs; language-independent |
+| `ai` | a question Claude answers about the diff |
+| `severity` | `low`, `medium`, `high`, `critical`; high and above mention your alert contact |
+
+A scan cannot answer every rule. Rules keyed on the push event (`when`) and
+AI-only rules are dropped before a scan evaluates, because a snapshot of
+committed code has nothing to answer them with. That is the honest limit of
+scanning, and the reason to install.
+
+- [Rule schema by example](https://github.com/saadiqayyum/Ironman/blob/main/rules.example.yaml)
+- [Rule catalog](https://github.com/saadiqayyum/Ironman/tree/main/lib/rules/catalog): 76 rules in 15 packs, shipped as code rather than seeded per account. Ecosystem packs self-scope by `paths`, so nobody declares what language a repository is.
+- [Rule engine](https://github.com/saadiqayyum/Ironman/blob/main/lib/engine.ts): glob matching via picomatch, content matching via RegExp.
+
+## API
+
+Session-authenticated JSON, same origin as the dashboard. There is no API token
+and no public endpoint.
+
+- `GET /api/scan-targets`: installations and repositories you may scan.
+- `GET /api/scan-branches`: branches of one repository you may scan.
+- `POST /api/scans`: queue a scan of one repository or a whole account.
+- `GET /api/scans/{id}`: scan status and findings.
+- `POST /api/scans/{id}/file`: file a finished scan's findings as GitHub issues.
+- `GET /api/alerts`, `POST /api/alerts/bulk`: alert feed and bulk acknowledge.
+- `GET|POST /api/rules`, `PATCH /api/rules/{id}`, `POST /api/rules/test`,
+  `POST /api/rules/import`, `GET /api/rules/export`.
+- `POST /api/webhook`: GitHub App webhook receiver, signature-verified.
+- `GET /api/health`.
+
+## Setup
+
+- [README](https://github.com/saadiqayyum/Ironman/blob/main/README.md): full operator setup, GitHub App permissions, webhook events, and the Vercel deploy.
+
+Required GitHub App permissions: Metadata read, Contents read, Issues read and
+write, Organization Members read. Pushguard deliberately does not request
+`administration`, so it cannot create repositories.
+
+Pushguard is a detection layer. Turn on prevention too: an org ruleset blocking
+force pushes on default branches, mandatory 2FA, and
+`npm config set ignore-scripts true` on developer machines.

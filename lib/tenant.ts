@@ -2,7 +2,6 @@ import { cookies } from "next/headers"
 import { installationsCollection, type InstallationDoc } from "@/lib/db"
 import { findInstallationForAccount, listInstallationRepos, listInstallationTeams } from "@/lib/github"
 import { logger } from "@/lib/logger"
-import { seedDefaultRules } from "@/lib/rules"
 
 export const ORG_COOKIE = "pushguard_org"
 // Sentinel cookie value for the merged, cross-organization alerts feed.
@@ -38,9 +37,6 @@ async function syncInstallationsFromGitHub(memberOrgs: string[]): Promise<void> 
       { upsert: true },
     )
     logger.info("installation_synced_from_github", { org, installationId })
-    // Same as the webhook path: an org registered this way must not end up
-    // with an empty rule set just because its installation event was missed.
-    await seedDefaultRules(org, org)
   }
 }
 

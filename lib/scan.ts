@@ -1,3 +1,4 @@
+import { resolveAlertTarget } from "@/lib/alert-target"
 import { auth, githubToken } from "@/lib/auth"
 import {
   accessibleRepos,
@@ -13,7 +14,7 @@ import {
   type ScanFinding,
   type ScanRepo,
 } from "@/lib/db"
-import { defaultRules } from "@/lib/default-rules"
+import { catalogRules } from "@/lib/rules/catalog"
 import { confirmContentMatches, evaluateRules, scannableRules, type PushContext } from "@/lib/engine"
 import {
   compareLink,
@@ -120,7 +121,7 @@ export async function branchesFor(
 
 async function rulesForScan(installation: InstallationDoc | null): Promise<Rule[]> {
   const owned = installation ? await getActiveRules(installation.installedBy) : []
-  return scannableRules(owned.length > 0 ? owned : defaultRules)
+  return scannableRules(owned.length > 0 ? owned : catalogRules)
 }
 
 async function usedToday(owner: string): Promise<number> {
@@ -274,8 +275,11 @@ async function collectFindings(
           senderFirstPush: false,
           branchCreated: false,
           branchDeleted: false,
+          authorMismatch: false,
+          unreviewed: null,
           hourUtc,
           files: snapshot.files,
+          commitMessages: [],
         }
         // Free correction: the snapshot just told us the real default.
         if (!scan.branch) await noteRepo(snapshot.repo, { defaultBranch: snapshot.branch })
@@ -400,17 +404,26 @@ export async function fileScanFindings(
       const ruleIds = findings.map((f) => f.ruleId)
       const read = scan.scanned?.find((s) => s.repo === repo)
 
+      // Same decision the push path makes, from the same function. This path
+      // used to skip it entirely and quote matched lines into whatever
+      // repository it was filing in, public ones included. Unknown visibility
+      // is treated as public: the safe default is to withhold, and a repository
+      // with no stored record has never been synced.
+      const stored = await repoRecord(repo)
+      const target = resolveAlertTarget(repo, stored?.private ?? false)
+
       // The same decision as the push path, made by the same function: add to
       // an open issue if one covers these rules, otherwise open one.
       const result = await fileOrThreadAlert({
         installationId: installation.installationId,
-        target: repo,
+        target: target.repo,
         severity,
         ruleIds,
         findings,
         source: "scan",
+        by: filer.login,
         title: `[${severity}] ${repo}: ${ruleIds.join(", ")}`,
-        body: scanIssueBody(findings, filer.login, installation.alertMention, read),
+        body: scanIssueBody(findings, filer.login, installation.alertMention, read, target.redactContent),
         // A reference, not a re-report. The rules and lines are already above.
         repeat: `Still present in a scan by @${filer.login}${read ? ` of \`${read.branch}\` at \`${read.headSha.slice(0, 7)}\`` : ""}.`,
       })
@@ -450,6 +463,7 @@ function scanIssueBody(
   login: string,
   mention: string | null,
   read: ScanRepo | undefined,
+  redactContent: boolean,
 ): string {
   const lines = [
     mention ? `${mention}, filed from a Pushguard scan by @${login}.` : `Filed from a Pushguard scan by @${login}.`,
@@ -459,7 +473,7 @@ function scanIssueBody(
       : `Read the last ${SCAN_COMMIT_WINDOW} commits on the default branch.`,
     "",
     "### Findings",
-    ...findingsMarkdown(findings),
+    ...findingsMarkdown(findings, redactContent),
   ]
   if (read) lines.push("", compareLink(read.repo, read.baseSha, read.headSha))
   lines.push(

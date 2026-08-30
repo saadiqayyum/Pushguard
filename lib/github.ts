@@ -2,6 +2,7 @@ import { App } from "@octokit/app"
 import { Octokit } from "@octokit/core"
 import { env } from "@/lib/env"
 import { AppError, type ErrorCode } from "@/lib/errors"
+import { logger } from "@/lib/logger"
 import { GITHUB_SEARCH_MAX_RESULTS, SCAN_COMMIT_WINDOW, type Paging } from "@/lib/paging"
 import type { ChangeType } from "@/schemas/rule"
 
@@ -87,6 +88,42 @@ export async function findOpenAlertBySha(installationId: number, targetRepo: str
     })
     return response.data.total_count > 0
   })
+}
+
+/**
+ * Did this commit reach the branch through a pull request?
+ *
+ * Asks GitHub which pull requests contain the commit. Nothing back means it was
+ * pushed straight at the branch, whatever its message claims: a commit reading
+ * "Merge pull request #15 from ..." is just a string, and one with a single
+ * parent was never a merge at all.
+ *
+ * Null on any failure, never true. The endpoint needs the Pull requests: Read
+ * permission, and an installation that has not accepted it 403s. Treating that
+ * as "unreviewed" would open a critical ticket for every push in the org the
+ * moment somebody wrote the rule, so an unanswerable question stays unanswered.
+ *
+ * Requires: Pull requests: Read.
+ */
+export async function commitReachedViaPullRequest(
+  installationId: number,
+  repoFullName: string,
+  sha: string,
+): Promise<boolean | null> {
+  try {
+    const response = await (await client(installationId)).request(
+      "GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls",
+      { ...splitRepo(repoFullName), commit_sha: sha, per_page: 1 },
+    )
+    return response.data.length > 0
+  } catch (error) {
+    logger.warn("pull_request_lookup_failed", {
+      repo: repoFullName,
+      sha,
+      status: (error as { status?: number }).status,
+    })
+    return null
+  }
 }
 
 export type InstallationRepo = { fullName: string; private: boolean; ownerType: string }
@@ -467,6 +504,68 @@ export async function fetchRepoSnapshot(
       truncated: truncated || files.length >= COMPARE_FILE_LIMIT,
       headSha: head,
       baseSha,
+    }
+  })
+}
+
+export type ErasedHistory = {
+  /** Commits reachable from the old tip and from nothing else. */
+  commits: { sha: string; message: string; author: string | null }[]
+  files: { path: string; changeType: ChangeType }[]
+  /** Added lines on the orphaned side. Still has to be differenced against the survivors. */
+  addedLines: string[]
+  mergeBase: string
+  truncated: boolean
+}
+
+/**
+ * What a force push took out of a branch, read from the orphaned side of the
+ * rewrite.
+ *
+ * The basehead is `after...before`, and the order is the entire trick. With the
+ * NEW tip as base and the ORPHANED tip as head, GitHub answers with the commits
+ * reachable from the old head and not the new one, plus a diff taken from their
+ * common ancestor. That is the side of a force push that no snapshot of the
+ * repository can reach: `git clone` gets the survivors, and so does every
+ * scanner that reads a checkout. Reversing these two arguments silently returns
+ * the surviving side instead, which looks plausible and detects nothing.
+ *
+ * Returns null when nothing was actually orphaned. `forced` is set by GitHub on
+ * plenty of pushes that only fast-forward, and a rewrite that dropped no commit
+ * has no erased side to inspect.
+ *
+ * Time-sensitive by nature. `before` is unreachable the moment the push lands,
+ * and GitHub garbage-collects unreachable objects. This has to run on the
+ * webhook, not from a cron picking the work up later.
+ */
+export async function fetchErasedHistory(
+  installationId: number,
+  repoFullName: string,
+  before: string,
+  after: string,
+): Promise<ErasedHistory | null> {
+  return github("compare erased history", async () => {
+    const response = await (await client(installationId)).request(
+      "GET /repos/{owner}/{repo}/compare/{basehead}",
+      { ...splitRepo(repoFullName), basehead: `${after}...${before}` },
+    )
+    const data = response.data
+    // Nothing reachable only from the old tip: the branch moved forward, it was
+    // not rewritten. No erasure to report.
+    if (data.commits.length === 0) return null
+
+    const files = (data.files ?? []) as ChangedFile[]
+    const { addedLines, truncated } = collectAddedLines(files)
+    return {
+      commits: data.commits.map((commit) => ({
+        sha: commit.sha,
+        message: commit.commit.message.split("\n")[0],
+        author: commit.author?.login ?? commit.commit.author?.name ?? null,
+      })),
+      files: files.map((file) => ({ path: file.filename, changeType: toChangeType(file.status) })),
+      addedLines,
+      mergeBase: data.merge_base_commit.sha,
+      truncated: truncated || files.length >= COMPARE_FILE_LIMIT,
     }
   })
 }

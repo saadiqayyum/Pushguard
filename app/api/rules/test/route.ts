@@ -15,12 +15,17 @@ export const POST = withErrorHandler("/api/rules/test", async (request) => {
     senderFirstPush: sample.senderFirstPush,
     branchCreated: sample.branchCreated,
     branchDeleted: sample.branchDeleted,
+    authorMismatch: sample.authorMismatch,
+    unreviewed: sample.unreviewed,
     hourUtc: new Date().getUTCHours(),
     files: sample.files,
+    commitMessages: sample.commitMessages,
   })
 
   if (!match) {
-    return NextResponse.json({ data: { matched: false, matchedFiles: [], matchedLines: [] } })
+    return NextResponse.json({
+      data: { matched: false, matchedFiles: [], matchedLines: [], matchedMessages: [] },
+    })
   }
 
   const addedLines = sample.diff
@@ -37,6 +42,7 @@ export const POST = withErrorHandler("/api/rules/test", async (request) => {
       matched: contentSatisfied,
       matchedFiles: match.matchedFiles,
       matchedLines: matchedLines.slice(0, 50),
+      matchedMessages: match.matchedMessages,
     },
   })
 })

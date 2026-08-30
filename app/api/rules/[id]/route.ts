@@ -1,54 +1,92 @@
 import { NextResponse } from "next/server"
 import { memberScopes, requireUser } from "@/lib/auth"
-import { rulesCollection, ruleVersionsCollection, serializeRule } from "@/lib/db"
+import { ruleVersionsCollection } from "@/lib/db"
 import { AppError } from "@/lib/errors"
 import { logger } from "@/lib/logger"
+import { catalogById } from "@/lib/rules/catalog"
+import { clearOverride, resolveRules, serializeResolvedRule, upsertOverride } from "@/lib/rules"
 import { withErrorHandler } from "@/lib/route"
 import { resolveTenant } from "@/lib/tenant"
 import { updateRuleBody } from "@/schemas/api"
 
+// `id` here is the rule's own id, not a database id. Most rules live in the
+// catalog file and have no row at all until somebody changes one, so the name
+// is the only thing that addresses every rule uniformly.
+async function requireRuleOwner(): Promise<{ owner: string; login: string }> {
+  const user = await requireUser()
+  const tenant = await resolveTenant(memberScopes(user))
+  if (!tenant.current) throw new AppError("forbidden", "No Pushguard installation for this account")
+  return { owner: tenant.current.installedBy, login: user.login }
+}
+
 export const PATCH = withErrorHandler("/api/rules/[id]", async (request, { params }) => {
   const { id } = await params
   const body = updateRuleBody.parse(await request.json())
+  const { owner, login } = await requireRuleOwner()
 
-  const collection = await rulesCollection()
-  const existing = await collection.findOne({ _id: id })
-  if (!existing) throw new AppError("not_found", "Rule not found")
+  const current = (await resolveRules(owner)).find((rule) => rule.id === id)
+  if (!current) throw new AppError("not_found", "Rule not found")
 
-  // The rule set belongs to an account; only someone whose own installation
-  // resolves to that same owner may change it.
-  const user = await requireUser()
-  const tenant = await resolveTenant(memberScopes(user))
-  if (tenant.current?.installedBy !== existing.owner) {
-    throw new AppError("forbidden", "Rule belongs to another account")
-  }
-
-  // ruleId is the stable key the unique index and dedup rely on; a body whose
-  // id no longer matches it would silently desync the two.
-  if (body.rule && body.rule.id !== existing.ruleId) {
+  // The id is the key everything addresses a rule by, including the override
+  // that is about to be written. A body renaming itself would write an override
+  // for one rule while claiming to edit another.
+  if (body.rule && body.rule.id !== id) {
     throw new AppError("validation_failed", "Rule id cannot be changed; duplicate it instead")
   }
 
-  const nextBody = body.rule ?? existing.body
-  const nextEnabled = body.enabled ?? existing.enabled
+  const { origin, ...currentBody } = current
+  const nextBody = body.rule ?? currentBody
+  const nextEnabled = body.enabled ?? current.enabled
   const action = body.rule ? "updated" : nextEnabled ? "enabled" : "disabled"
-  const now = new Date()
 
-  await collection.updateOne(
-    { _id: id },
-    { $set: { body: nextBody, enabled: nextEnabled, updatedAt: now } },
-  )
-
+  await upsertOverride({ owner, ruleId: id, body: nextBody, enabled: nextEnabled, by: login })
   await (await ruleVersionsCollection()).insertOne({
     _id: crypto.randomUUID(),
     ruleId: id,
     body: nextBody,
     action,
-    changedBy: user.login,
-    changedAt: now,
+    changedBy: login,
+    changedAt: new Date(),
   })
-  logger.info("rule_changed", { owner: existing.owner, ruleId: existing.ruleId, action, by: user.login })
+  logger.info("rule_changed", { owner, ruleId: id, action, by: login, wasFrom: origin })
+
   return NextResponse.json({
-    data: serializeRule({ ...existing, body: nextBody, enabled: nextEnabled, updatedAt: now }),
+    data: serializeResolvedRule({
+      ...nextBody,
+      enabled: nextEnabled,
+      origin: catalogById.has(id) ? "modified" : "custom",
+    }),
+  })
+})
+
+/**
+ * Undo a change, rather than delete a rule.
+ *
+ * For a rule somebody wrote, the override *is* the rule and this removes it.
+ * For a catalog rule it removes only the edit, and the shipped rule applies
+ * again. There is deliberately no way to delete a catalog rule outright:
+ * disabling it says the same thing and survives, whereas a deletion would be
+ * silently undone the next time the catalog is read.
+ */
+export const DELETE = withErrorHandler("/api/rules/[id]", async (_request, { params }) => {
+  const { id } = await params
+  const { owner, login } = await requireRuleOwner()
+
+  const cleared = await clearOverride(owner, id)
+  if (!cleared) throw new AppError("not_found", "No change to undo for that rule")
+
+  await (await ruleVersionsCollection()).insertOne({
+    _id: crypto.randomUUID(),
+    ruleId: id,
+    body: catalogById.get(id) ?? null,
+    action: catalogById.has(id) ? "reverted" : "deleted",
+    changedBy: login,
+    changedAt: new Date(),
+  })
+  logger.info("rule_override_cleared", { owner, ruleId: id, by: login, catalog: catalogById.has(id) })
+
+  const restored = catalogById.get(id)
+  return NextResponse.json({
+    data: restored ? serializeResolvedRule({ ...restored, origin: "catalog" }) : null,
   })
 })
