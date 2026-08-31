@@ -121,8 +121,8 @@ regex hit — that would mean it could only ever find what the regex already fou
 flowchart TD
   rule{scope}
   rule -->|changed| bulk["Bulk load changed files<br/>matching paths"]
-  bulk --> graph["Two-stage graph<br/>cheap triage, then deep"]
-  graph --> verdict1[Findings]
+  bulk --> triage["Two-stage graph<br/>cheap triage, then deep"]
+  triage --> verdict1[Findings]
 
   rule -->|repository| sess[Queue a review session]
   sess --> orient["Diff stats + hunks<br/>+ dependency advisories"]
