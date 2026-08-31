@@ -21,3 +21,7 @@ export const AI_USAGE_TTL_SECONDS = 172_800;
 // Background work claimed but never reported back. The invocation that owned it
 // was cut off, so it goes back in the queue rather than staying claimed forever.
 export const STUCK_AFTER_MS = 5 * 60 * 1000;
+
+// Rows moved per collection when a repository is renamed. Beyond this the
+// remainder is logged and left behind rather than rewriting a collection.
+export const MAX_RENAME_ROWS = 2_000;

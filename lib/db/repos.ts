@@ -1,4 +1,5 @@
 import { defineCollection, rawDb } from "./client"
+import { MAX_RENAME_ROWS } from "./limits"
 
 export type RepoDoc = {
   _id: string
@@ -67,6 +68,59 @@ export async function recordPushActor(repo: string, sender: string): Promise<boo
     { upsert: true },
   )
   return result.upsertedCount === 1
+}
+
+type RepoKeyed = { _id: string; repo: string; [field: string]: unknown }
+
+// `_id` is immutable, so rows keyed by the repository name are re-inserted under
+// the new key rather than updated. Capped: a rename does not license an
+// unbounded rewrite.
+async function rekeyByRepo(
+  name: string,
+  from: string,
+  to: string,
+  key: (doc: RepoKeyed) => string,
+): Promise<number> {
+  const collection = rawDb().collection<RepoKeyed>(name)
+  const docs = await collection.find({ repo: from }).limit(MAX_RENAME_ROWS).toArray()
+  if (docs.length === 0) return 0
+
+  await collection.bulkWrite(
+    docs.map(({ _id, ...rest }) => ({
+      replaceOne: {
+        filter: { _id: key({ _id, ...rest }) },
+        replacement: { ...rest, repo: to },
+        upsert: true,
+      },
+    })),
+    { ordered: false },
+  )
+  await collection.deleteMany({ _id: { $in: docs.map((doc) => doc._id) } })
+  return docs.length
+}
+
+// A repository's full name is its key in every projection, so a rename that
+// moves only the repos row makes the repository look new: first-push fires
+// again, alerts stop deduping, and members lose read access to their history.
+export async function renameRepoProjections(from: string, to: string): Promise<void> {
+  if (from === to) return
+
+  const existing = await repos().findOne({ _id: from })
+  if (existing) {
+    const { _id, ...rest } = existing
+    await repos().deleteOne({ _id })
+    await repos().replaceOne({ _id: to }, { ...rest, updatedAt: new Date() }, { upsert: true })
+  }
+
+  await rekeyByRepo("push_actors", from, to, (doc) => `${to}\0${doc.sender as string}`)
+  await rekeyByRepo(
+    "repo_access",
+    from,
+    to,
+    (doc) => `${(doc.login as string).toLowerCase()}\0${to.toLowerCase()}`,
+  )
+  await rekeyByRepo("alerts", from, to, (doc) => `${to}#${doc.number as number}`)
+  await rawDb().collection("review_sessions").updateMany({ repo: from }, { $set: { repo: to } })
 }
 
 // Drop what is derived from GitHub. Scans, rules and filed alerts are the

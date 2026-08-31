@@ -9,7 +9,7 @@ import {
   syncTeamRepo,
 } from "@/lib/access"
 import { processMatches } from "@/lib/alerts"
-import { db, activeInstallation, forgetAlert, noteAlertActivity, noteRepo, removeAlertComment, upsertAlertComment, recordAlert, purgeOrgProjections, purgeRepoProjections, recordPushActor } from "@/lib/db"
+import { db, activeInstallation, forgetAlert, noteAlertActivity, noteRepo, removeAlertComment, upsertAlertComment, recordAlert, purgeOrgProjections, purgeRepoProjections, recordPushActor, renameRepoProjections } from "@/lib/db"
 import { evaluateRules, needsReviewCheck, type PushContext } from "@/lib/engine"
 import { runAiRules } from "@/lib/ai-rules"
 import { drainReviewSessions, queueRepositoryRules } from "@/lib/review-session"
@@ -425,13 +425,10 @@ async function handleRepository(raw: string): Promise<Response> {
   const previousName = payload.changes?.repository?.name?.from
   if (payload.action === "renamed" && previousName) {
     const oldId = `${payload.repository.owner.login}/${previousName}`
-    const existing = await db.repos().findOne({ _id: oldId })
-    if (existing) {
-      await db.repos().deleteOne({ _id: oldId })
-      await db.repos().insertOne({ ...existing, _id: fullName, updatedAt: new Date() })
-      logger.info("repo_renamed", { from: oldId, to: fullName })
-      return new NextResponse(null, { status: 204 })
-    }
+    await renameRepoProjections(oldId, fullName)
+    await forgetIndex([oldId])
+    logger.info("repo_renamed", { from: oldId, to: fullName })
+    return new NextResponse(null, { status: 204 })
   }
 
   await noteRepo(fullName, {
