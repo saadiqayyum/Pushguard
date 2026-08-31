@@ -195,6 +195,18 @@ and links the orphaned range so it can be read before GitHub collects it.
 4. **Deploy** to Vercel. `vercel.json` registers the scan-queue cron; set
    `CRON_SECRET` so nothing else can call it.
 
+   The schedule is daily because Vercel's Hobby plan allows one cron run a
+   day. On Pro, set it back to `*/10 * * * *`.
+
+   Daily is a real reduction, not just a slower one. The endpoint runs
+   `reconcileAccess()` as well as draining the queue, and that re-reads
+   collaborator lists because GitHub does not emit an event for every way
+   access can change. Once a day means somebody removed from a repository can
+   stay readable in the projection for up to a day. Draining matters less:
+   a scan runs in the invocation that queued it, so the cron only picks up the
+   ones that invocation dropped. Anything that can call a URL on a schedule can
+   drive it more often, with `CRON_SECRET` as a bearer token.
+
 ## Setup (each organization)
 
 1. Install the GitHub App on the organization, all repositories. The
