@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { memberScopes, requireUser } from "@/lib/auth"
-import { ruleVersionsCollection } from "@/lib/db"
+import { db } from "@/lib/db"
 import { AppError } from "@/lib/errors"
 import { logger } from "@/lib/logger"
 import { catalogById } from "@/lib/rules/catalog"
@@ -9,9 +9,7 @@ import { withErrorHandler } from "@/lib/route"
 import { resolveTenant } from "@/lib/tenant"
 import { updateRuleBody } from "@/schemas/api"
 
-// `id` here is the rule's own id, not a database id. Most rules live in the
-// catalog file and have no row at all until somebody changes one, so the name
-// is the only thing that addresses every rule uniformly.
+// `id` here is the rule's own id, not a database id. Most rules live in the.
 async function requireRuleOwner(): Promise<{ owner: string; login: string }> {
   const user = await requireUser()
   const tenant = await resolveTenant(memberScopes(user))
@@ -27,9 +25,6 @@ export const PATCH = withErrorHandler("/api/rules/[id]", async (request, { param
   const current = (await resolveRules(owner)).find((rule) => rule.id === id)
   if (!current) throw new AppError("not_found", "Rule not found")
 
-  // The id is the key everything addresses a rule by, including the override
-  // that is about to be written. A body renaming itself would write an override
-  // for one rule while claiming to edit another.
   if (body.rule && body.rule.id !== id) {
     throw new AppError("validation_failed", "Rule id cannot be changed; duplicate it instead")
   }
@@ -40,7 +35,7 @@ export const PATCH = withErrorHandler("/api/rules/[id]", async (request, { param
   const action = body.rule ? "updated" : nextEnabled ? "enabled" : "disabled"
 
   await upsertOverride({ owner, ruleId: id, body: nextBody, enabled: nextEnabled, by: login })
-  await (await ruleVersionsCollection()).insertOne({
+  await db.ruleVersions().insertOne({
     _id: crypto.randomUUID(),
     ruleId: id,
     body: nextBody,
@@ -59,15 +54,8 @@ export const PATCH = withErrorHandler("/api/rules/[id]", async (request, { param
   })
 })
 
-/**
- * Undo a change, rather than delete a rule.
- *
- * For a rule somebody wrote, the override *is* the rule and this removes it.
- * For a catalog rule it removes only the edit, and the shipped rule applies
- * again. There is deliberately no way to delete a catalog rule outright:
- * disabling it says the same thing and survives, whereas a deletion would be
- * silently undone the next time the catalog is read.
- */
+// Undo a change, rather than delete a rule.
+// For a rule somebody wrote, the override *is* the rule and this removes it.
 export const DELETE = withErrorHandler("/api/rules/[id]", async (_request, { params }) => {
   const { id } = await params
   const { owner, login } = await requireRuleOwner()
@@ -75,7 +63,7 @@ export const DELETE = withErrorHandler("/api/rules/[id]", async (_request, { par
   const cleared = await clearOverride(owner, id)
   if (!cleared) throw new AppError("not_found", "No change to undo for that rule")
 
-  await (await ruleVersionsCollection()).insertOne({
+  await db.ruleVersions().insertOne({
     _id: crypto.randomUUID(),
     ruleId: id,
     body: catalogById.get(id) ?? null,

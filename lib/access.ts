@@ -1,27 +1,14 @@
-import {
-  grantRepoAccess,
-  installationsCollection,
-  replaceRepoAccess,
-  repoAccessCollection,
-  revokeRepoAccess,
-} from "@/lib/db"
-import { MAX_STORED_BRANCHES, reposCollection } from "@/lib/db"
+import { db, grantRepoAccess, replaceRepoAccess, revokeRepoAccess } from "@/lib/db"
+import { MAX_STORED_BRANCHES, repos } from "@/lib/db"
 import { fetchRepoBranches, listRepoCollaborators, listTeamMembers, listTeamRepos } from "@/lib/github"
 import { logger } from "@/lib/logger"
 import { ownerOf } from "@/lib/finding"
 
-/**
- * Keeps the repo-access projection current.
- *
- * Everything here talks to GitHub, and everything here is called from a webhook
- * or the reconciliation job, never from a request the browser makes. That is
- * the whole point of the projection: the cost of knowing who can read what is
- * paid when GitHub tells us something changed, not when a user opens a page.
- */
+// Keeps the repo-access projection current.
 
 const TEAM_GRANT = (org: string, slug: string) => `team:${org}/${slug}`
 
-/** Re-read one repository's collaborator list and replace what we stored. */
+// Re-read one repository's collaborator list and replace what we stored.
 export async function syncRepoAccess(installationId: number, repo: string): Promise<number> {
   const collaborators = await listRepoCollaborators(installationId, repo)
   await replaceRepoAccess(repo, installationId, collaborators)
@@ -33,14 +20,10 @@ export async function syncRepoAccess(installationId: number, repo: string): Prom
   return collaborators.length
 }
 
-/**
- * Read a repository's branches once and store them. From here the create,
- * delete and push events keep the list current, so this runs at install and on
- * reconciliation and nowhere else, never on a request.
- */
+// Read a repository's branches once and store them. From here the create,.
 export async function syncRepoBranches(installationId: number, repo: string): Promise<void> {
   const fresh = await fetchRepoBranches(installationId, repo, MAX_STORED_BRANCHES)
-  await (await reposCollection()).updateOne(
+  await repos().updateOne(
     { _id: repo },
     {
       $set: {
@@ -58,16 +41,12 @@ export async function syncRepoBranches(installationId: number, repo: string): Pr
   )
 }
 
-/** Everything a repository needs stored: who can read it, and what branches it has. */
+// Everything a repository needs stored: who can read it, and what branches it has.
 async function syncRepo(installationId: number, repo: string): Promise<void> {
   await Promise.all([syncRepoAccess(installationId, repo), syncRepoBranches(installationId, repo)])
 }
 
-/**
- * Repositories are synced in small batches. A large installation would otherwise
- * fire hundreds of GitHub requests at once and get itself rate limited on the
- * one event that matters most. The install.
- */
+// Repositories are synced in small batches. A large installation would otherwise.
 const SYNC_BATCH = 5
 
 export async function syncManyRepos(installationId: number, repos: string[]): Promise<void> {
@@ -75,7 +54,6 @@ export async function syncManyRepos(installationId: number, repos: string[]): Pr
     await Promise.all(
       repos.slice(i, i + SYNC_BATCH).map((repo) =>
         syncRepo(installationId, repo).catch((error: unknown) => {
-          // One unreadable repository must not abandon the rest of the install.
           logger.warn("repo_sync_failed", {
             repo,
             error: error instanceof Error ? error.message : String(error),
@@ -86,7 +64,7 @@ export async function syncManyRepos(installationId: number, repos: string[]): Pr
   }
 }
 
-/** A team gained or lost a repository: every member of it gains or loses access. */
+// A team gained or lost a repository: every member of it gains or loses access.
 export async function syncTeamRepo(
   installationId: number,
   org: string,
@@ -106,7 +84,7 @@ export async function syncTeamRepo(
   logger.info("team_repo_access_synced", { team: grant, repo, action, members: members.length })
 }
 
-/** Someone joined or left a team: they gain or lose everything that team reaches. */
+// Someone joined or left a team: they gain or lose everything that team reaches.
 export async function syncTeamMember(
   installationId: number,
   org: string,
@@ -126,25 +104,21 @@ export async function syncTeamMember(
   logger.info("team_member_access_synced", { team: grant, login, action, repos: repos.length })
 }
 
-/** Left the organization: every grant in it goes, whatever its source. */
+// Left the organization: every grant in it goes, whatever its source.
 export async function revokeOrgAccess(org: string, login: string): Promise<void> {
-  const result = await (await repoAccessCollection()).deleteMany({ login: login.toLowerCase(), org })
+  const result = await db.repoAccess().deleteMany({ login: login.toLowerCase(), org })
   logger.info("org_access_revoked", { org, login, removed: result.deletedCount })
 }
 
-/**
- * Correct drift. GitHub does not emit an event for every way access can change,
- * and a delivery can simply fail. So the projection is re-read on a schedule
- * rather than trusted forever.
- */
+// Correct drift. GitHub does not emit an event for every way access can change,.
 export async function reconcileAccess(limit = 25): Promise<number> {
-  const installations = await (await installationsCollection()).find({ active: true }).toArray()
+  const active = await db.installations().find({ active: true }).toArray()
   let synced = 0
-  for (const installation of installations) {
+  for (const installation of active) {
     const repos = (installation.repos ?? []).slice(0, limit)
     await syncManyRepos(installation.installationId, repos)
     synced += repos.length
   }
-  logger.info("access_reconciled", { installations: installations.length, repos: synced })
+  logger.info("access_reconciled", { installations: active.length, repos: synced })
   return synced
 }

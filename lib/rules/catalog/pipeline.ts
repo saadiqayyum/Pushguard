@@ -1,9 +1,4 @@
-/**
- * CI, containers, infrastructure, shell, binaries and secrets. Not a language
- * between them, and between them they are where most real supply-chain attacks
- * land: CI holds the credentials, containers ship the result, and a binary in a
- * source tree is a diff nobody can read.
- */
+// CI, containers, infrastructure, shell, binaries and secrets. Not a language.
 export const ci = [
   {
     id: "ci-workflow-changed",
@@ -16,9 +11,6 @@ export const ci = [
     id: "ci-pull-request-target",
     description: "A workflow running on pull_request_target, with secrets, against a fork's code",
     severity: "critical",
-    // pull_request_target runs in the base repo's context, with its secrets,
-    // and a checkout of the fork's ref turns that into arbitrary code execution
-    // for anyone who can open a pull request.
     paths: [".github/workflows/**"],
     added_lines: "pull_request_target|workflow_run",
   },
@@ -26,14 +18,6 @@ export const ci = [
     id: "ci-action-unpinned",
     description: "An action pinned to a tag or branch rather than a commit SHA",
     severity: "high",
-    // A tag is mutable. Whoever owns the action can change what it does after
-    // you reviewed it.
-    //
-    // Matches the ref rather than anchoring on `uses:`. Every formulation that
-    // did anchor there was rejected by the regex safety check as polynomial:
-    // an unbounded run before a required `@` is exactly the shape that
-    // backtracks. Slightly broader as a result, and scoped to workflow files to
-    // keep that in hand.
     paths: [".github/workflows/**", ".github/actions/**"],
     added_lines: "@(?![0-9a-f]{40})[A-Za-z0-9._-]{1,50}",
   },
@@ -42,10 +26,6 @@ export const ci = [
     description: "A workflow step piping secrets or the environment to the network",
     severity: "critical",
     paths: [".github/workflows/**", "**/.gitlab-ci.yml", "**/azure-pipelines.yml", "**/Jenkinsfile"],
-    // Names the exfiltration verbs rather than looking for `curl` near
-    // `secrets.`. Pairing the two needs `.*` between them, which backtracks, and
-    // matching `secrets.` alone would fire on every workflow that legitimately
-    // uses one.
     added_lines: "printenv|env\\s*\\||curl\\s+(-d|--data|-F|-T)|base64\\s+-w|nc\\s+-",
   },
   {
@@ -53,9 +33,6 @@ export const ci = [
     description: "A job moved onto a self-hosted runner",
     severity: "high",
     paths: [".github/workflows/**"],
-    // The literal alone. Anchoring on `runs-on:` needs an unbounded run before
-    // it, which backtracks; the rule is scoped to workflow files, where the word
-    // appearing at all is the thing worth seeing.
     added_lines: "self-hosted",
   },
   {
@@ -109,7 +86,6 @@ export const container = [
     id: "infra-state-or-provider-changed",
     description: "Terraform provider, backend, or external data source changed",
     severity: "high",
-    // `external` and `local-exec` run commands on whoever applies the plan.
     paths: ["**/*.tf", "**/*.tfvars", "**/*.hcl"],
     added_lines: 'local-exec|remote-exec|data\\s+"external"|backend\\s+"|source\\s*=\\s*"(git|https?)',
   },
@@ -120,19 +96,12 @@ export const shell = [
     id: "shell-pipe-to-interpreter",
     description: "Downloading a script and piping it straight into a shell",
     severity: "critical",
-    // No path scoping: this pattern is as dangerous in a README as in a script,
-    // because people copy it out of one and run it.
     added_lines: "\\|\\s*(sudo\\s+)?(sh|bash|zsh|python|perl|ruby|node)\\b",
   },
   {
     id: "shell-reverse-connection",
     description: "A reverse shell or raw network connection to a fixed host",
     severity: "critical",
-    // `socat` is matched on its own rather than paired with `exec`, because
-    // pairing them needs a run between the two that backtracks, and a bounded
-    // one missed `socat tcp:1.2.3.4:80 exec:/bin/sh` entirely: the address in
-    // the middle is not letters. socat appearing in a diff at all is worth a
-    // look, and matching more is the safe direction for a detector.
     added_lines:
       "/dev/tcp/|nc\\s+-[a-z]*e|socat\\s|exec:/bin/|bash\\s+-i\\s",
   },
@@ -179,8 +148,6 @@ export const binary = [
     id: "binary-executable-committed",
     description: "An executable or library committed to a source repository",
     severity: "critical",
-    // The diff for these is unreadable, so review is not review. A binary in a
-    // source tree is trust with no way to verify it.
     paths: [
       "**/*.exe",
       "**/*.dll",

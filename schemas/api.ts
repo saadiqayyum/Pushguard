@@ -5,17 +5,14 @@ import { checkedRuleSchema } from "@/schemas/rule-safety"
 // No org: rules belong to the caller's account and apply to all of its orgs.
 export const createRuleBody = z.object({ rule: checkedRuleSchema }).strict()
 
-// No free text. The client picks from what GitHub said the user can reach, and
-// the server re-checks the choice against that same list. An installation id
-// and a repository name are the only things that can be asked for.
+// No free text. The client picks from what GitHub said the user can reach, and.
 export const createScanBody = z
   .object({
     installationId: z.number().int().positive(),
-    // Omitted means "every repository I can read in this installation".
+    // Which stored key pays for this scan's AI rules. Absent means run none:
+    // a scan that spends money should be one somebody chose to spend on.
+    aiKey: z.string().uuid().optional(),
     repo: z.string().regex(/^[^/\s]+\/[^/\s]+$/, "Expected owner/repo").optional(),
-    // A git ref, so slashes are legal (`release/1.2`) but traversal is not.
-    // Only meaningful with `repo`: scanning a whole account reads each
-    // repository's own default branch, and they do not share branch names.
     branch: z
       .string()
       .min(1)
@@ -98,3 +95,27 @@ export const testRuleBody = z
 export type CreateRuleBody = z.infer<typeof createRuleBody>
 export type UpdateRuleBody = z.infer<typeof updateRuleBody>
 export type TestRuleBody = z.infer<typeof testRuleBody>
+
+// Adding a key.
+export const addAiKeyBody = z
+  .object({
+    label: z.string().trim().min(1).max(40),
+    provider: z.enum(["anthropic", "openai", "google-genai"]),
+    // Trimmed: a key pasted with a trailing newline is stored verbatim and then
+    // sent as an HTTP header, which the provider answers with a 401 that looks
+    // like a wrong key rather than a stray character.
+    apiKey: z.string().trim().min(16).max(400),
+    model: z.string().trim().min(2).max(64),
+    effort: z.enum(["low", "medium", "high"]).default("medium"),
+  })
+  .strict()
+
+// Changing which key runs when a rule does not name one.
+export const aiSettingsBody = z.object({ defaultKey: z.string().uuid() }).strict()
+
+// Editing one. The secret is optional; sending one replaces it.
+export const editAiKeyBody = addAiKeyBody.partial({ apiKey: true })
+
+export type AddAiKeyBody = z.infer<typeof addAiKeyBody>
+export type EditAiKeyBody = z.infer<typeof editAiKeyBody>
+export type AiSettingsBody = z.infer<typeof aiSettingsBody>

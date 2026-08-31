@@ -9,7 +9,8 @@ Two ways in. Watching is the product; scanning is how you see what it finds
 before you install anything.
 
 - **Watch**: push -> webhook -> rule engine -> diff fetch only if a rule needs
-  one -> optional AI review -> issue in the repository that was pushed.
+  one -> optional AI review -> issue in the repository that was pushed. A push
+  that matches nothing costs zero GitHub API calls.
 - **Scan**: reads the last 50 commits already committed to a branch, stores
   findings, files nothing on GitHub until you say so.
 
@@ -31,9 +32,26 @@ Key properties, because they are the questions people actually ask:
   that it happened. A secret committed and then force-pushed away is still
   leaked, and this is what reports it.
 - Path rules cost zero GitHub API calls; the webhook payload already lists
-  changed files. Content rules fetch one compare diff, capped at 50 KB.
+  changed files. Content rules fetch one compare diff with a 2 MB read budget,
+  and lines are matched in full with no length cap. Exceeding the budget files a
+  finding of its own rather than a footnote: an unread diff is a blind spot, and
+  the answer is "we did not look", not "nothing found".
 - AI review is advisory and escalate-only. A rule match files a ticket
-  regardless of what the AI says about the diff.
+  regardless of what the AI says.
+- AI rules are their own kind of rule, not a field on a pattern rule. They fire
+  on their own `paths`, so they can find what no pattern was written for.
+  `scope: changed` reads the files a push touched; `scope: repository` runs as a
+  background session where the model navigates the tree through two tools,
+  `read_file` and `find_references`, with every path validated against the
+  rule's own scope. The model never holds a credential: it names a path and the
+  server decides whether it gets one.
+- `find_references` answers from a code index built at install and maintained by
+  the push webhook. It stores paths and identifiers, never source, and costs no
+  GitHub call at review time.
+- A model that could not answer is reported, never treated as a clean result.
+  Timeouts, rate limits, truncation and partial indexes each file a finding, for
+  the same reason an unread diff does: a reader cannot tell "we did not look"
+  from "nothing found".
 - No cache and no TTL anywhere. Stored GitHub data is a projection maintained by
   webhooks, not a copy with a guess about when it went stale.
 - Limits: 25 scans a day, 20 repositories each, one at a time per account.
@@ -60,16 +78,16 @@ independently.
 | `added_lines` | regex against added diff lines, case-sensitive, no flags |
 | `commit_message` | regex against each commit's subject line |
 | `unicode_risk` | `controls` for Trojan Source (bidi overrides, invisible characters), `confusables` adds homoglyphs; language-independent |
-| `ai` | a question Claude answers about the diff |
+| (AI rules are separate) | a rule carrying a `prompt` instead of a pattern |
 | `severity` | `low`, `medium`, `high`, `critical`; high and above mention your alert contact |
 
 A scan cannot answer every rule. Rules keyed on the push event (`when`) and
-AI-only rules are dropped before a scan evaluates, because a snapshot of
+Push-event rules are dropped before a scan evaluates, because a snapshot of
 committed code has nothing to answer them with. That is the honest limit of
 scanning, and the reason to install.
 
-- [Rule schema by example](https://github.com/saadiqayyum/Ironman/blob/main/rules.example.yaml)
-- [Rule catalog](https://github.com/saadiqayyum/Ironman/tree/main/lib/rules/catalog): 76 rules in 15 packs, shipped as code rather than seeded per account. Ecosystem packs self-scope by `paths`, so nobody declares what language a repository is.
+- [Rule schema by example](https://github.com/saadiqayyum/Ironman/blob/main/public/rules.example.yaml)
+- [Rule catalog](https://github.com/saadiqayyum/Ironman/tree/main/lib/rules/catalog): 78 rules in 16 packs, shipped as code rather than seeded per account. Ecosystem packs self-scope by `paths`, so nobody declares what language a repository is.
 - [Rule engine](https://github.com/saadiqayyum/Ironman/blob/main/lib/engine.ts): glob matching via picomatch, content matching via RegExp.
 
 ## API

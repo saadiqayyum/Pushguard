@@ -19,6 +19,13 @@ import {
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   TableBody,
   TableCell,
   TableHead,
@@ -39,34 +46,35 @@ import type { Rule, Severity } from "@/schemas/rule";
 import type { RuleRow } from "@/components/rule-types";
 import { ImportRulesDialog } from "@/components/import-rules-dialog";
 import { CatalogDialog, type CatalogPack } from "@/components/catalog-dialog";
+import { AiRuleForm, type AiRuleFormMode } from "@/components/ai-rule-form";
+import { AI_EXAMPLE_PACKS, aiExamples } from "@/lib/rules/ai-examples";
+import type { AiRule } from "@/schemas/ai-rule";
 import { PageHeader } from "@/components/page-header";
 import { TableToolbar } from "@/components/table-toolbar";
 import { SeverityBadge } from "@/components/severity-badge";
 import { TableShell } from "@/components/table-shell";
 
 export function RulesView({
-  orgs,
   initialRules,
   catalog,
   catalogPacks,
-  catalogActive,
+  aiKeys,
   loadError,
   paging,
   scopeOptions,
 }: {
-  orgs: string[];
   initialRules: RuleRow[];
-  /** Every rule Pushguard ships, for the picker. Not rows in this table. */
   catalog: Rule[];
   catalogPacks: CatalogPack[];
-  /** Catalog rules running right now, whether or not anyone has looked at them. */
-  catalogActive: number;
+  aiKeys: { id: string; label: string; model: string }[];
   loadError: boolean;
   paging: { page: number; perPage: number; total: number; hasMore: boolean };
   scopeOptions: ScopeOption[];
 }) {
   const [rows, setRows] = useState(initialRules);
   const [mode, setMode] = useState<RuleFormMode | null>(null);
+  const [aiMode, setAiMode] = useState<AiRuleFormMode | null>(null);
+  const [only, setOnly] = useState<"all" | "pattern" | "ai">("all");
 
   function onSaved(row: RuleRow, saved: RuleFormMode) {
     setRows((prev) =>
@@ -82,7 +90,17 @@ export function RulesView({
       prev.map((r) => (r.id === row.id ? { ...r, enabled } : r)),
     );
     try {
-      await api(`/api/rules/${row.id}`, { method: "PATCH", body: { enabled } });
+      if (row.kind === "ai") {
+        await api(`/api/ai-rules/${row.ruleId}`, {
+          method: "PATCH",
+          body: { ...row.body, enabled },
+        });
+      } else {
+        await api(`/api/rules/${row.id}`, {
+          method: "PATCH",
+          body: { enabled },
+        });
+      }
       toast.success(`Rule ${row.ruleId} ${enabled ? "enabled" : "disabled"}`);
     } catch (error) {
       setRows((prev) =>
@@ -105,33 +123,64 @@ export function RulesView({
         count={paging.total}
         noun="rule"
         primary={
-          <Button size="sm" onClick={() => setMode({ kind: "create" })}>
-            <Plus className="size-4" />
-            New rule
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="sm">
+                <Plus className="size-4" />
+                New rule
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onSelect={() => setMode({ kind: "create" })}>
+                Pattern rule
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setAiMode({ kind: "create" })}>
+                AI rule
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         }
       >
+        <Select value={only} onValueChange={(v) => setOnly(v as typeof only)}>
+          <SelectTrigger size="sm" className="w-36">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All rules</SelectItem>
+            <SelectItem value="pattern">Pattern only</SelectItem>
+            <SelectItem value="ai">AI only</SelectItem>
+          </SelectContent>
+        </Select>
         <ImportRulesDialog />
         <CatalogDialog
-          rules={catalog}
-          packs={catalogPacks}
-          onSelect={(rule) => setMode({ kind: "duplicate", rule })}
+          rules={[
+            ...catalog.map((rule) => ({ ...rule, kind: "pattern" as const })),
+            ...aiExamples.map((rule) => ({
+              ...rule,
+              pack: "ai-examples",
+              kind: "ai" as const,
+            })),
+          ]}
+          packs={[...catalogPacks, ...AI_EXAMPLE_PACKS]}
+          onSelect={({ kind, pack, ...rule }) =>
+            // `kind` and `pack` are added here for browsing and are not part of
+            // either schema. Both are strict, so carrying them through is a
+            // rejected save.
+            kind === "ai"
+              ? setAiMode({
+                  kind: "create",
+                  from: {
+                    ...(rule as unknown as AiRule),
+                    id: rule.id.replace(/^example-/, ""),
+                  },
+                })
+              : setMode({
+                  kind: "duplicate",
+                  rule: { ...rule, ...(pack ? { pack } : {}) } as unknown as Rule,
+                })
+          }
         />
       </TableToolbar>
-
-      {!loadError && initialRules.length === 0 && (
-        <Card>
-          <CardContent className="space-y-1 text-sm text-muted-foreground">
-            <p className="font-medium text-foreground">
-              {catalogActive} catalog rules are running on every push.
-            </p>
-            <p>
-              They ship with Pushguard, so there is nothing to set up. This table lists only rules
-              you write or change. Browse the catalog to start your own from one.
-            </p>
-          </CardContent>
-        </Card>
-      )}
 
       {loadError && (
         <Card>
@@ -163,94 +212,106 @@ export function RulesView({
               </TableCell>
             </TableRow>
           )}
-          {rows.map((row) => {
-            const rule = row.body as {
-              severity?: Severity;
-              description?: string;
-            } & Record<string, unknown>;
-            return (
-              <TableRow key={row.id}>
-                <TableCell>
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <p className="font-medium">{row.ruleId}</p>
-                    {row.pack ? (
-                      <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
-                        {row.pack}
-                      </span>
+          {rows
+            .filter((row) => only === "all" || row.kind === only)
+            .map((row) => {
+              const rule = row.body as {
+                severity?: Severity;
+                description?: string;
+              } & Record<string, unknown>;
+              return (
+                <TableRow key={row.id}>
+                  <TableCell>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <p className="font-medium">{row.ruleId}</p>
+                      {row.pack ? (
+                        <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                          {row.pack}
+                        </span>
+                      ) : null}
+                      {row.kind === "ai" && (
+                        <span className="rounded bg-foreground px-1.5 py-0.5 text-[10px] font-medium text-background">
+                          AI
+                        </span>
+                      )}
+                      {row.kind === "pattern" && row.origin !== "catalog" ? (
+                        <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                          {row.origin === "modified" ? "edited" : "custom"}
+                        </span>
+                      ) : null}
+                    </div>
+                    {rule.description ? (
+                      <p className="max-w-md truncate text-xs text-muted-foreground">
+                        {rule.description}
+                      </p>
                     ) : null}
-                    {row.origin !== "catalog" ? (
-                      <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                        {row.origin === "modified" ? "edited" : "custom"}
-                      </span>
-                    ) : null}
-                  </div>
-                  {rule.description ? (
-                    <p className="max-w-md truncate text-xs text-muted-foreground">
-                      {rule.description}
-                    </p>
-                  ) : null}
-                </TableCell>
-                <TableCell>
-                  <SeverityBadge severity={rule.severity ?? "low"} />
-                </TableCell>
-                <TableCell className="hidden text-xs text-muted-foreground lg:table-cell">
-                  {conditionSummary(rule)}
-                </TableCell>
-                {/* Locale-independent: toLocaleDateString() renders in the
-                      server's locale during SSR and the browser's on hydration,
-                      which React reports as a hydration mismatch. */}
-                <TableCell className="hidden text-xs text-muted-foreground md:table-cell">
-                  {/* Null while a catalog rule is untouched: it ships with the
-                      code and has never been written to the database. */}
-                  {row.updatedAt ? row.updatedAt.slice(0, 10) : "shipped"}
-                </TableCell>
-                <TableCell className="text-right">
-                  <div className="flex items-center justify-end gap-2">
-                    <Switch
-                      checked={row.enabled}
-                      onCheckedChange={(v) => toggleRule(row, v)}
-                    />
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          aria-label={`Actions for ${row.ruleId}`}
-                        >
-                          <MoreHorizontal className="size-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem
-                          onSelect={() =>
-                            setMode({
-                              kind: "edit",
-                              docId: row.id,
-                              rule: row.body as Rule,
-                            })
-                          }
-                        >
-                          <Pencil className="size-4" />
-                          Edit
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onSelect={() =>
-                            setMode({
-                              kind: "duplicate",
-                              rule: row.body as Rule,
-                            })
-                          }
-                        >
-                          <Copy className="size-4" />
-                          Duplicate
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                </TableCell>
-              </TableRow>
-            );
-          })}
+                  </TableCell>
+                  <TableCell>
+                    <SeverityBadge severity={rule.severity ?? "low"} />
+                  </TableCell>
+                  <TableCell className="hidden text-xs text-muted-foreground lg:table-cell">
+                    {conditionSummary(rule)}
+                  </TableCell>
+                  <TableCell className="hidden text-xs text-muted-foreground md:table-cell">
+                    {row.updatedAt ? row.updatedAt.slice(0, 10) : "shipped"}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex items-center justify-end gap-2">
+                      <Switch
+                        checked={row.enabled}
+                        onCheckedChange={(v) => toggleRule(row, v)}
+                      />
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            aria-label={`Actions for ${row.ruleId}`}
+                          >
+                            <MoreHorizontal className="size-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem
+                            onSelect={() =>
+                              row.kind === "ai"
+                                ? setAiMode({
+                                    kind: "edit",
+                                    rule: row.body as AiRule,
+                                  })
+                                : setMode({
+                                    kind: "edit",
+                                    docId: row.id,
+                                    rule: row.body as Rule,
+                                  })
+                            }
+                          >
+                            <Pencil className="size-4" />
+                            Edit
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onSelect={() =>
+                              row.kind === "ai"
+                                ? setAiMode({
+                                    kind: "edit",
+                                    rule: row.body as AiRule,
+                                  })
+                                : setMode({
+                                    kind: "duplicate",
+                                    rule: row.body as Rule,
+                                  })
+                            }
+                          >
+                            <Copy className="size-4" />
+                            Duplicate
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
         </TableBody>
       </TableShell>
 
@@ -262,16 +323,41 @@ export function RulesView({
         basePath="/dashboard/rules"
       />
 
-      {/* Keyed so switching between rules remounts the form with fresh state
-          instead of keeping the previous rule's values. */}
+      <Dialog
+        open={aiMode !== null}
+        onOpenChange={(open) => !open && setAiMode(null)}
+      >
+        <DialogContent className="w-[calc(100%-2rem)] max-w-2xl gap-6 p-6 sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>
+              {aiMode?.kind === "edit"
+                ? `Edit ${aiMode.rule.id}`
+                : "New AI rule"}
+            </DialogTitle>
+          </DialogHeader>
+          {aiMode && (
+            <AiRuleForm
+              key={
+                aiMode.kind === "edit"
+                  ? aiMode.rule.id
+                  : (aiMode.from?.id ?? "create")
+              }
+              mode={aiMode}
+              keys={aiKeys}
+              onSaved={() => {
+                setAiMode(null);
+                window.location.reload();
+              }}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
+
       <Dialog
         open={mode !== null}
         onOpenChange={(open) => !open && setMode(null)}
       >
         <DialogContent
-          // Both max-w forms are needed: the base sets an unprefixed
-          // max-w-[calc(100%-2rem)] that a bare sm: override does not replace,
-          // which is what made this dialog span the whole viewport.
           className="max-h-[85vh] w-[calc(100%-2rem)] max-w-3xl gap-6 overflow-y-auto p-6 sm:max-w-3xl"
         >
           <DialogHeader>

@@ -8,7 +8,7 @@ import {
   topSeverity,
   type ForcePushForensics,
 } from "@/lib/finding"
-import { analyzeDiff } from "@/lib/ai"
+import { analyseChangedJavaScript } from "@/lib/xray"
 import {
   alertExistsForCommit,
   openAlertForRules,
@@ -19,36 +19,41 @@ import {
   type ScanFinding,
 } from "@/lib/db"
 import { confirmContentMatches, type ConfirmedMatch, type RuleMatch } from "@/lib/engine"
-import { commentOnIssue, createAlertIssue, fetchAddedLines, type CompareResult } from "@/lib/github"
+import {
+  commentOnIssue,
+  createAlertIssue,
+  DIFF_READ_BUDGET,
+  fetchAddedLines,
+  type CompareResult,
+} from "@/lib/github"
 import { logger } from "@/lib/logger"
 import type { Severity } from "@/schemas/rule"
 import type { PushPayload } from "@/schemas/webhook"
 
 const EMPTY_SHA = "0".repeat(40)
 
-/**
- * The repeat wording for a push: a reference, not a re-report.
- *
- * Everything about what matched is already in the issue above, restating the
- * rules, files and lines on every recurrence buries the discussion under copies
- * of the opening post. What a reader needs is who did it again, where, and a
- * link to look.
- */
+// A diff too big to read is a blind spot, and blind spots are where things get
+// put.
+const TRUNCATED_FINDING = {
+  id: "diff-not-fully-read",
+  severity: "high" as const,
+  description: "The diff exceeded the read budget, so part of this push was never scanned",
+}
+
+// The repeat wording for a push: a reference, not a re-report.
 function buildRepeat(
   payload: PushPayload,
   forensics: ForcePushForensics | null,
+  extra: ScanFinding[],
   redactContent: boolean,
 ): string {
   const branch = payload.ref.replace("refs/heads/", "")
   const lines = [`Seen again on \`${branch}\` by @${payload.sender.login}, ${reviewLink(payload)}`]
 
-  // The exception to "a repeat is a reference, not a re-report". Every force
-  // push orphans a *different* set of commits, so this is new evidence each
-  // time and not a restatement of the opening post. It also cannot wait for a
-  // new issue: `force-push` is in the rule set of every one of these, and
-  // openAlertForRules threads on any overlap, so the first alert in a repo
-  // absorbs every force push after it. Dropping the erasure here would mean
-  // only ever reporting the first one.
+  if (extra.length > 0) {
+    lines.push("", "### Found by analysis on this push", ...findingsMarkdown(extra, redactContent))
+  }
+
   if (forensics) {
     lines.push(
       ...erasureMarkdown(forensics, payload.repository.full_name, payload.before),
@@ -62,18 +67,7 @@ function buildRepeat(
 
 export type FiledAlert = { number: number; url: string; threaded: boolean }
 
-/**
- * The one place an alert reaches GitHub.
- *
- * Both callers. A push that matched, and a scan somebody reported, need the
- * same decision: is this already open here, in which case add to it, or is it
- * new, in which case open it. Having that logic twice meant fixing threading on
- * the push path and shipping a scan path that still opened duplicates.
- *
- * What genuinely differs between the two is the wording, so the caller supplies
- * `body` for a new issue and `repeat` for a comment on an existing one. Nothing
- * else about the decision is theirs to make.
- */
+// The one place an alert reaches GitHub.
 export async function fileOrThreadAlert(input: {
   installationId: number
   target: string
@@ -86,14 +80,10 @@ export async function fileOrThreadAlert(input: {
   repeat: string
   assignees?: string[]
   push?: AlertDoc["push"]
-  /** Who filed it, when there is no push to name. Scans only. */
   by?: string
 }): Promise<FiledAlert> {
   const existing = await openAlertForRules(input.target, input.ruleIds)
   if (existing) {
-    // Recorded per sighting rather than only counted: the alert's own ruleIds,
-    // findings and push never change after it is opened, so without this a
-    // recurrence is invisible except as a number going up.
     const seen = await recordOccurrence(existing._id, {
       ruleIds: input.ruleIds,
       sha: input.push?.after ?? null,
@@ -110,9 +100,6 @@ export async function fileOrThreadAlert(input: {
       issue: existing.number,
       occurrence: seen,
       source: input.source,
-      // Why this became a comment instead of an issue. Threading is decided by
-      // whether the open alert already covers every rule now firing, and
-      // without both lists the decision is invisible from the logs.
       rules: input.ruleIds,
       coveredBy: existing.ruleIds,
     })
@@ -148,18 +135,13 @@ export async function fileOrThreadAlert(input: {
   return { number: issue.number, url: issue.html_url, threaded: false }
 }
 
-/**
- * `forensics` is what a force push removed, already matched against the rules.
- * It arrives as a separate argument rather than being fetched here because it
- * can be the *only* reason an alert exists: an attacker who force-pushes to
- * hide a commit leaves a surviving side that matches nothing, which is the
- * whole point of doing it.
- */
+// `forensics` is what a force push removed, already matched against the rules.
 export async function processMatches(
   installation: InstallationDoc,
   payload: PushPayload,
   matches: RuleMatch[],
   forensics: ForcePushForensics | null = null,
+  aiFindings: ScanFinding[] = [],
 ): Promise<void> {
   const repo = payload.repository.full_name
   const sha = payload.after
@@ -167,8 +149,6 @@ export async function processMatches(
 
   const target = resolveAlertTarget(repo, payload.repository.private)
 
-  // Redelivered webhook or a retry: this exact commit was already reported.
-  // A local read rather than a GitHub issue search, reads do not call GitHub.
   if (await alertExistsForCommit(target.repo, sha)) {
     logger.info("alert_deduplicated", { repo, sha })
     return
@@ -181,39 +161,34 @@ export async function processMatches(
     : null
 
   const confirmed = confirmContentMatches(matches, diff?.addedLines ?? null)
-  // An erasure finding stands on its own. The surviving side of a force push
-  // that was made to hide something matches nothing by design, so dismissing on
-  // the visible push alone would drop exactly the alerts worth filing.
-  if (confirmed.length === 0 && !forensics) {
+  if (confirmed.length === 0 && !forensics && !diff?.truncated && aiFindings.length === 0) {
     logger.info("alert_dismissed_no_content_match", { repo, sha })
     return
   }
 
-  const aiSections: string[] = []
-  for (const match of confirmed) {
-    if (!match.rule.ai || !diff) continue
-    const verdict = await analyzeDiff(match.rule.ai, diff.addedLines)
-    aiSections.push(
-      verdict
-        ? `**AI review (${match.rule.id})**, risk: ${verdict.risk}\n${verdict.summary}`
-        : `**AI review (${match.rule.id})**, analysis unavailable`,
-    )
-  }
+  const changed = filesIn(payload)
+
+  const serious = confirmed.filter(
+    (match) => SEVERITY_ORDER.indexOf(match.rule.severity) >= SEVERITY_ORDER.indexOf("high"),
+  )
+  
+
+  const xray =
+    serious.length > 0 ? await analyseChangedJavaScript(installationId, repo, sha, changed) : []
 
   const findings = [
+    ...(diff?.truncated
+      ? [toFinding(TRUNCATED_FINDING, repo, [], [`Read ${DIFF_READ_BUDGET} of a larger diff.`], { prose: true })]
+      : []),
     ...confirmed.map((match) =>
-      // A matched commit message is evidence exactly like a matched diff line.
       toFinding(match.rule, repo, match.matchedFiles, [...match.matchedMessages, ...match.matchedLines]),
     ),
     ...(forensics?.findings ?? []),
+    ...xray,
+    ...aiFindings,
   ]
-  // Deduped: the same rule can match on both sides of a rewrite, and a repeated
-  // id would both bloat the title and confuse the threading lookup.
   const ruleIds = [...new Set(findings.map((finding) => finding.ruleId))]
   const severity = topSeverity(findings.map((finding) => finding.severity))
-  // Both sources can only ever be empty together, but this files GitHub issues:
-  // an empty rule list would open one titled after nothing and thread against
-  // every other empty-ruled alert in the repo.
   if (findings.length === 0) {
     logger.info("alert_dismissed_no_findings", { repo, sha })
     return
@@ -231,8 +206,16 @@ export async function processMatches(
     findings,
     source: "push",
     title: `[${severity}] ${repo}: ${ruleIds.join(", ")}`,
-    body: buildBody(payload, confirmed, aiSections, diff?.truncated ?? false, mention, forensics, target.redactContent),
-    repeat: buildRepeat(payload, forensics, target.redactContent),
+    body: buildBody(
+      payload,
+      confirmed,
+      [...xray, ...aiFindings],
+      diff?.truncated ?? false,
+      mention,
+      forensics,
+      target.redactContent,
+    ),
+    repeat: buildRepeat(payload, forensics, [...xray, ...aiFindings], target.redactContent),
     assignees: assigneesFor(installation.alertMention),
     push: {
       branch: payload.ref.replace("refs/heads/", ""),
@@ -254,21 +237,25 @@ export async function processMatches(
 
 }
 
-
-
-// Put the alert on someone's "Assigned to you" list. Only a user handle can be
-// assigned: `org/team` mentions have no assignable identity, so they get the
-// @mention only. Assigning the pusher would be wrong. That account is the
-// thing under suspicion.
+// Put the alert on someone's "Assigned to you" list. Only a user handle can be.
 export function assigneesFor(alertMention: string | null): string[] {
   if (!alertMention) return []
   const handle = alertMention.replace(/^@/, "")
   return handle.includes("/") ? [] : [handle]
 }
 
-// A compare against the empty SHA 404s on GitHub, which is exactly the case on
-// a branch's first push, `compareLink` links the commit itself when there is
-// no base to compare against.
+// The files a push touched, in the shape the analyser wants.
+function filesIn(payload: PushPayload) {
+  const seen = new Map<string, "added" | "modified" | "removed">();
+  for (const commit of payload.commits) {
+    for (const path of commit.added) seen.set(path, "added");
+    for (const path of commit.modified) if (!seen.has(path)) seen.set(path, "modified");
+    for (const path of commit.removed) seen.set(path, "removed");
+  }
+  return [...seen.entries()].map(([path, changeType]) => ({ path, changeType }));
+}
+
+// A compare against the empty SHA 404s on GitHub, which is exactly the case on.
 function reviewLink(payload: PushPayload): string {
   return compareLink(
     payload.repository.full_name,
@@ -280,7 +267,7 @@ function reviewLink(payload: PushPayload): string {
 function buildBody(
   payload: PushPayload,
   matches: ConfirmedMatch[],
-  aiSections: string[],
+  extra: ScanFinding[],
   truncated: boolean,
   mention?: string,
   forensics?: ForcePushForensics | null,
@@ -322,8 +309,17 @@ function buildBody(
       ...findingsMarkdown(forensics.findings, redactContent),
     )
   }
-  if (aiSections.length > 0) lines.push("", ...aiSections)
-  if (truncated) lines.push("", "Diff exceeded the size cap and was truncated; review the full compare on GitHub.")
+  if (extra.length > 0) {
+    lines.push("", "### Found by analysis", ...findingsMarkdown(extra, redactContent))
+  }
+  if (truncated) {
+    lines.push(
+      "",
+      `This diff was larger than the ${DIFF_READ_BUDGET} read budget, so part of this push was never`,
+      "scanned. A rule can only match what was read; nothing here says the unread part is clean.",
+      "Review the full compare on GitHub.",
+    )
+  }
   if (payload.before === EMPTY_SHA) {
     lines.push("", "Branch had no previous head, so content rules were reported without diff confirmation.")
   }

@@ -23,8 +23,6 @@ export function OrgSwitcher({
   allOrgs?: boolean
 }) {
   const router = useRouter()
-  // Rules and settings act on exactly one org, so "All" is offered only on the
-  // alerts feed. Elsewhere the trigger shows the concrete org being edited.
   const allowAll = usePathname() === "/dashboard"
 
   return (

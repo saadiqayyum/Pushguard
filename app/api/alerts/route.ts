@@ -4,9 +4,7 @@ import { listAlerts } from "@/lib/db"
 import { parsePaging } from "@/lib/paging"
 import { withErrorHandler } from "@/lib/route"
 
-// Mongo only. The GitHub issue is still where people triage, but the feed is
-// served from the mirror the issues webhook keeps current, so opening the
-// dashboard costs no GitHub call.
+// Mongo only. The GitHub issue is still where people triage, but the feed is.
 export const GET = withErrorHandler("/api/alerts", async (request) => {
   const url = new URL(request.url)
   const org = url.searchParams.get("org") ?? ""

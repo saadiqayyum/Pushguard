@@ -33,21 +33,13 @@ export type AlertRow = {
   acknowledgedBy: string | null;
   archived: boolean;
   occurrences: number;
-  /** The branch that was pushed. Null on alerts filed from a scan. */
   branch: string | null;
   createdAt: string;
 };
 
 type Action = "archive" | "unarchive" | "close";
 
-/**
- * The alert feed, with bulk triage.
- *
- * Archive and close are deliberately separate. Archiving is local, "handled in
- * my list", and leaves the GitHub issue alone. Closing changes the shared
- * record and needs write access on that repository, which the server checks per
- * alert because a selection can span repositories where permissions differ.
- */
+// The alert feed, with bulk triage.
 export function AlertsView({
   alerts,
   archived,
@@ -55,7 +47,6 @@ export function AlertsView({
 }: {
   alerts: AlertRow[];
   archived: boolean;
-  /** Rendered in the toolbar: it filters the rows, so it belongs above them. */
   orgSwitcher?: React.ReactNode;
 }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -88,8 +79,6 @@ export function AlertsView({
             : `${action === "archive" ? "Archived" : "Restored"} ${result.done}`,
         );
       }
-      // Reported one by one rather than as a count: "3 failed" tells nobody
-      // which three, and permissions differ per repository.
       for (const failure of result.failed.slice(0, 3)) {
         toast.error(`${failure.id}: ${failure.reason}`);
       }
@@ -108,9 +97,6 @@ export function AlertsView({
 
   return (
     <div className="space-y-4">
-      {/* The toolbar sits with the table it acts on, not up beside the page
-          title: selection, bulk actions and the account filter all change what
-          the rows below show. */}
       <TableToolbar
         count={selected.size > 0 ? selected.size : alerts.length}
         noun={selected.size > 0 ? "selected" : "alert"}
@@ -214,8 +200,6 @@ export function AlertsView({
                       </span>
                     )}
                   </span>
-                  {/* What the hidden columns would have said, for the screens
-                      that hide them. */}
                   <span className="mt-1 block font-mono text-xs break-all text-muted-foreground md:hidden">
                     {alert.repo}#{alert.number}
                     {alert.branch ? ` · ${alert.branch}` : ""}

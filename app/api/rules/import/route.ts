@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { parse as parseYaml } from "yaml"
 import { memberScopes, requireUser } from "@/lib/auth"
-import { rulesCollection, ruleVersionsCollection, type RuleDoc } from "@/lib/db"
+import { db, type RuleDoc } from "@/lib/db"
 import { AppError } from "@/lib/errors"
 import { logger } from "@/lib/logger"
 import { withErrorHandler } from "@/lib/route"
@@ -9,18 +9,7 @@ import { resolveTenant } from "@/lib/tenant"
 import { importRulesBody } from "@/schemas/api"
 import { checkedRulesFileSchema } from "@/schemas/rule-safety"
 
-/**
- * Bulk import, YAML or JSON.
- *
- * The same `checkedRulesFileSchema` the repository's own `rules.example.yaml` is
- * validated against, so a file generated elsewhere is held to exactly the
- * documented contract: a bad regex or an unknown field is refused here rather
- * than failing silently on the next push.
- *
- * Existing ids are updated rather than duplicated, and every write leaves a
- * version row, so an import is as reversible and as auditable as an edit made
- * by hand.
- */
+// Bulk import, YAML or JSON.
 export const POST = withErrorHandler("/api/rules/import", async (request) => {
   const { content } = importRulesBody.parse(await request.json())
   const user = await requireUser()
@@ -28,8 +17,6 @@ export const POST = withErrorHandler("/api/rules/import", async (request) => {
   if (!tenant.current) throw new AppError("forbidden", "No Pushguard installation for this account")
   const owner = tenant.current.installedBy
 
-  // JSON is a subset of YAML, so one parser reads both. A parse error is the
-  // author's, not ours: say which line rather than "invalid".
   let parsed: unknown
   try {
     parsed = parseYaml(content)
@@ -40,14 +27,13 @@ export const POST = withErrorHandler("/api/rules/import", async (request) => {
   const rules = checkedRulesFileSchema.parse(parsed)
   if (rules.length === 0) throw new AppError("validation_failed", "No rules in that file")
 
-  const collection = await rulesCollection()
-  const versions = await ruleVersionsCollection()
+  const versions = db.ruleVersions()
   const now = new Date()
   let created = 0
   let updated = 0
 
   for (const rule of rules) {
-    const existing = await collection.findOne({ owner, ruleId: rule.id })
+    const existing = await db.rules().findOne({ owner, ruleId: rule.id })
     const _id = existing?._id ?? crypto.randomUUID()
 
     const doc: RuleDoc = {
@@ -60,7 +46,7 @@ export const POST = withErrorHandler("/api/rules/import", async (request) => {
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     }
-    await collection.replaceOne({ _id }, doc, { upsert: true })
+    await db.rules().replaceOne({ _id }, doc, { upsert: true })
     await versions.insertOne({
       _id: crypto.randomUUID(),
       ruleId: _id,
@@ -73,8 +59,6 @@ export const POST = withErrorHandler("/api/rules/import", async (request) => {
     else created++
   }
 
-  // Deliberately no per-rule notification issue: importing twenty rules would
-  // file twenty tickets. The version rows are the audit trail.
   logger.info("rules_imported", { owner, by: user.login, created, updated })
   return NextResponse.json({ data: { created, updated, total: rules.length } })
 })

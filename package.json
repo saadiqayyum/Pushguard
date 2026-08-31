@@ -11,10 +11,17 @@
     "validate:rules": "tsx scripts/validate-rules.ts",
     "migrate:catalog": "tsx --env-file-if-exists=.env scripts/migrate-rules-to-catalog.ts",
     "audit:rules": "tsx --env-file-if-exists=.env scripts/audit-stored-rules.ts",
-    "test": "tsx --test lib/*.test.ts lib/rules/*.test.ts schemas/*.test.ts"
+    "test": "tsx --test lib/*.test.ts lib/*.test.mts lib/rules/*.test.ts schemas/*.test.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.122.0",
     "@hookform/resolvers": "^5.9.1",
+    "@langchain/anthropic": "^1.5.8",
+    "@langchain/core": "^1.2.9",
+    "@langchain/google-genai": "^2.3.0",
+    "@langchain/langgraph": "^1.4.13",
+    "@langchain/openai": "^1.5.10",
+    "@nodesecure/js-x-ray": "^16.0.0",
     "@octokit/app": "^16.1.4",
     "@octokit/core": "^7.0.7",
     "@octokit/webhooks-methods": "^6.0.0",
@@ -22,6 +29,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
+    "langchain": "^1.5.10",
     "lucide-react": "^1.37.0",
     "mongodb": "^7.6.0",
     "next": "16.3.3",

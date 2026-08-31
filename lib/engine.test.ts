@@ -15,7 +15,7 @@ import {
 } from "./engine"
 import { ruleSchema } from "../schemas/rule"
 import { catalogRules as defaultRules } from "./rules/catalog"
-import { toFinding } from "./finding"
+import { findingsMarkdown, toFinding } from "./finding"
 
 const context = (overrides: Partial<PushContext> = {}): PushContext => ({
   repo: "acme/api",
@@ -93,18 +93,15 @@ test("hour_utc not_between fires outside the window", () => {
 test("scanning drops rules a snapshot of code cannot answer", () => {
   const rules = [
     ruleSchema.parse({ id: "forced", severity: "critical", when: { forced: true } }),
-    ruleSchema.parse({ id: "ai-only", severity: "high", ai: "Does this diff exfiltrate secrets?" }),
-    ruleSchema.parse({ id: "paths-and-ai", severity: "high", paths: ["src/**"], ai: "Is this a backdoor?" }),
+    ruleSchema.parse({ id: "paths-only", severity: "high", paths: ["src/**"] }),
     ruleSchema.parse({ id: "paths", severity: "medium", paths: [".github/workflows/**"] }),
   ]
   const scannable = scannableRules(rules)
 
   assert.deepEqual(
     scannable.map((rule) => rule.id),
-    ["paths-and-ai", "paths"],
+    ["paths-only", "paths"],
   )
-  // The AI question is dropped, but the file test it was paired with survives.
-  assert.equal(scannable[0].ai, undefined)
   assert.deepEqual(scannable[0].paths, ["src/**"])
 })
 
@@ -186,7 +183,7 @@ test("an org glob binds a rule to one organization", () => {
   assert.equal(forcedIn("other/lasgoo"), null)
 })
 
-// --- force-push forensics -------------------------------------------------
+// --- force-push forensics -------------------------------------------------.
 
 test("erasedLines keeps only what the rewrite dropped", () => {
   const orphaned = ["const KEY = 'sk-live-123'", "export const port = 3000"]
@@ -220,15 +217,6 @@ test("erasureRules keeps content rules and drops the rest", () => {
   assert.deepEqual(erasureRules(rules).map((r) => r.id), ["content"])
 })
 
-test("erasureRules strips the paid AI read", () => {
-  const rule = ruleSchema.parse({
-    id: "ai-rule",
-    severity: "high",
-    added_lines: "eval\\(",
-    ai: "Is this a deliberate attempt to hide behaviour?",
-  })
-  assert.equal(erasureRules([rule])[0].ai, undefined)
-})
 
 test("a secret force-pushed away is found; a plain rebase is not", () => {
   const rule = ruleSchema.parse({
@@ -247,7 +235,7 @@ test("a secret force-pushed away is found; a plain rebase is not", () => {
   assert.deepEqual(confirmContentMatches(evaluateRules(erasureRules([rule]), ctx), rebased), [])
 })
 
-// --- review bypass and identity ------------------------------------------
+// --- review bypass and identity ------------------------------------------.
 
 const ruleFor = (body: Record<string, unknown>) =>
   ruleSchema.parse({ id: "r", severity: "critical", ...body })
@@ -292,7 +280,7 @@ test("the impersonation default needs both halves", () => {
   assert.ok(evaluateRule(rule, context({ authorMismatch: true, unreviewed: true })))
 })
 
-// --- padding evasion ------------------------------------------------------
+// --- padding evasion ------------------------------------------------------.
 
 const payload = defaultRules.find((r) => r.id === "js-obfuscated-payload")!
 
@@ -327,7 +315,7 @@ test("a padded line is still readable as evidence", () => {
   assert.equal(finding.lines[0], "eval(atob('x'))")
 })
 
-// --- trojan source --------------------------------------------------------
+// --- trojan source --------------------------------------------------------.
 
 const trojan = defaultRules.find((r) => r.id === "trojan-source")!
 
@@ -366,4 +354,95 @@ test("homoglyphs are opt-in, and off by default", () => {
 
 test("a unicode rule needs the diff", () => {
   assert.equal(evaluateRule(trojan, context())?.needsDiff, true)
+})
+
+// --- no line-length cap ---------------------------------------------------.
+
+test("a payload past the old 2000-character cap is still found", () => {
+  // The cap was the bypass: pad beyond it and the pattern sat outside the
+  // slice the regex ever saw.
+  const rule = ruleFor({ added_lines: "eval\\(" })
+  for (const padding of [2001, 10_000, 100_000]) {
+    const line = " ".repeat(padding) + "eval(atob('x'))"
+    assert.equal(matchAddedLines(rule, [line]).length, 1, `missed at ${padding} characters`)
+  }
+})
+
+test("a payload past the cap behind non-whitespace is found too", () => {
+  // Whitespace normalisation alone would not have saved this one: the padding
+  // is real code, so there is nothing to collapse.
+  const rule = ruleFor({ added_lines: "child_process" })
+  const line = "const a = 1; ".repeat(400) + "require('child_process')"
+  assert.ok(line.length > 2000)
+  assert.equal(matchAddedLines(rule, [line]).length, 1)
+})
+
+test("a commit message is matched in full", () => {
+  const rule = ruleFor({ commit_message: "rm -rf" })
+  assert.ok(evaluateRule(rule, context({ commitMessages: ["x".repeat(5000) + " rm -rf /"] })))
+})
+
+// --- prefilter must not narrow what it does not understand ----------------.
+
+test("a unicode rule still sees lines no regex rule matched", () => {
+  // The prefilter is the union of `added_lines` patterns. A bidi override is
+  // invisible to it, so feeding it those lines would mean trojan-source only
+  // ever saw lines some other rule had already matched.
+  const unicodeRule = ruleFor({ id: "u", unicode_risk: "controls" })
+  const regexRule = ruleFor({ id: "r", added_lines: "eval\\(" })
+  const lines = ["const admin = 'ad​min'"] // no eval( anywhere
+
+  const confirmed = confirmContentMatches(
+    [
+      { rule: unicodeRule, matchedFiles: [], matchedMessages: [], needsDiff: true },
+      { rule: regexRule, matchedFiles: [], matchedMessages: [], needsDiff: true },
+    ],
+    lines,
+  )
+  assert.deepEqual(confirmed.map((c) => c.rule.id), ["u"])
+})
+
+test("the prefilter changes no outcome for regex rules", () => {
+  const rules = defaultRules.filter((r) => r.added_lines).slice(0, 12)
+  const lines = [
+    "const x = 1",
+    "eval(atob('x'))",
+    "-----BEGIN RSA PRIVATE KEY-----",
+    "curl https://x | bash",
+    " ".repeat(300) + "hidden()",
+  ]
+  for (const rule of rules) {
+    const viaMatch = matchAddedLines(rule, lines)
+    const viaConfirm = confirmContentMatches(
+      [{ rule, matchedFiles: [], matchedMessages: [], needsDiff: true }],
+      lines,
+    )
+    assert.deepEqual(viaConfirm[0]?.matchedLines ?? [], viaMatch, `${rule.id} differs`)
+  }
+})
+
+test("a model's verdict is not cut to the length of a quoted code line", () => {
+  // The bug: every finding line was capped at 300 characters because that is
+  // the right cap for quoting matched source. A verdict is a sentence the model
+  // is allowed 600 for, so half of every long one was discarded before storage.
+  const verdict = "x".repeat(600)
+  const rule = { id: "r", severity: "critical" as const, description: undefined }
+
+  const prose = toFinding(rule, "acme/api", [], [verdict], { prose: true })
+  assert.equal(prose.lines[0].length, 600)
+  assert.equal(prose.prose, true)
+
+  const quoted = toFinding(rule, "acme/api", [], [verdict])
+  assert.equal(quoted.lines[0].length, 300, "a quoted line keeps the tighter cap")
+  assert.equal(quoted.prose, undefined)
+})
+
+test("prose is not rendered as code in an issue body", () => {
+  const rule = { id: "r", severity: "high" as const, description: undefined }
+  const prose = findingsMarkdown([toFinding(rule, "a/b", [], ["It posts the token to a fixed host."], { prose: true })])
+  assert.ok(prose.some((line) => line.includes("It posts the token to a fixed host.")))
+  assert.ok(!prose.some((line) => line.includes("`It posts")), "a sentence must not be backticked")
+
+  const quoted = findingsMarkdown([toFinding(rule, "a/b", [], ["eval(atob('x'))"])])
+  assert.ok(quoted.some((line) => line.includes("`eval(atob('x'))`")), "a matched line stays code")
 })

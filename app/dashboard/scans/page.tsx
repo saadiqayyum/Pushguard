@@ -1,6 +1,9 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { NewScanDialog } from "@/components/new-scan-dialog";
+import { memberScopes } from "@/lib/auth";
+import { installationForDisplay } from "@/lib/db";
+import { resolveTenant } from "@/lib/tenant";
 import { TableShell } from "@/components/table-shell";
 import { TableToolbar } from "@/components/table-toolbar";
 import {
@@ -14,7 +17,7 @@ import { formatTimestamp } from "@/lib/format";
 import { PageHeader } from "@/components/page-header";
 import { Pager } from "@/components/pager";
 import { auth } from "@/lib/auth";
-import { scansCollection } from "@/lib/db";
+import { db } from "@/lib/db";
 import { installUrl } from "@/lib/install-url";
 import { parsePaging } from "@/lib/paging";
 import { SCAN_LIMITS } from "@/lib/scan";
@@ -43,15 +46,25 @@ export default async function ScansPage({
 
   const login = session.login || session.user.name || "";
 
-  const scans = await scansCollection();
+  // The keys this account has saved, so a scan can name which one pays.
+  const tenant = await resolveTenant(memberScopes(session));
+  const settings = tenant.current
+    ? await installationForDisplay(tenant.current.org)
+    : null;
+  const aiKeys = (settings?.aiKeys ?? []).map((entry) => ({
+    id: entry.id,
+    label: entry.label,
+    model: entry.model,
+  }));
+
   const [rows, total] = await Promise.all([
-    scans
+    db.scans()
       .find({ owner: login })
       .sort({ createdAt: -1 })
       .skip(paging.skip)
       .limit(paging.perPage)
       .toArray(),
-    scans.countDocuments({ owner: login }),
+    db.scans().countDocuments({ owner: login }),
   ]);
   const running = rows.find(
     (scan) => scan.status === "queued" || scan.status === "running",
@@ -79,6 +92,7 @@ export default async function ScansPage({
           !running && (
             <NewScanDialog
               installUrl={installUrl()}
+              aiKeys={aiKeys}
               note={`${SCAN_LIMITS.perDay} scans a day, up to ${SCAN_LIMITS.repos} repositories each. The list comes from GitHub: it holds exactly the repositories you can read.`}
             />
           )
@@ -116,7 +130,6 @@ export default async function ScansPage({
                 >
                   {scan.target}
                 </Link>
-                {/* What the hidden columns would have said. */}
                 <span className="mt-1 block text-xs text-muted-foreground md:hidden">
                   {scan.repos.length}{" "}
                   {scan.repos.length === 1 ? "repository" : "repositories"} ·{" "}

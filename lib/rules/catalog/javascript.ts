@@ -1,8 +1,4 @@
-/**
- * npm, and the install-time execution that makes it the softest supply-chain
- * target in general use. `npm install` runs arbitrary code from packages you
- * did not audit, on a developer laptop with their credentials on it.
- */
+// npm, and the install-time execution that makes it the softest supply-chain.
 const JS_SOURCE = ["**/*.js", "**/*.mjs", "**/*.cjs", "**/*.ts", "**/*.tsx", "**/*.jsx", "**/*.mts", "**/*.cts"]
 
 export const javascript = [
@@ -19,26 +15,19 @@ export const javascript = [
     severity: "high",
     paths: JS_SOURCE,
     added_lines: "eval\\(|new Function\\(|child_process|[A-Za-z0-9+/]{200,}={0,2}",
-    ai: "Is this obfuscated or dynamically executed code a deliberate attempt to hide behaviour, or an ordinary build artifact such as a minified bundle, a source map, or a vendored dependency? Say what the code actually does if you can tell.",
   },
   {
     id: "js-npmrc-changed",
     description: "npm registry or auth configuration changed",
     severity: "critical",
-    // Repointing the registry is how a dependency gets swapped for someone
-    // else's without a single line of application code changing.
     paths: ["**/.npmrc", "**/.yarnrc", "**/.yarnrc.yml", "**/bunfig.toml"],
   },
   {
     id: "js-lockfile-only-change",
     description: "A lockfile changed with no matching manifest change",
     severity: "high",
-    // A lockfile pins resolved URLs and integrity hashes. Editing it alone,
-    // without touching package.json, is not something a package manager does.
     paths: ["**/package-lock.json", "**/yarn.lock", "**/pnpm-lock.yaml", "**/bun.lockb"],
     added_lines: "\"resolved\"\\s*:\\s*\"(?!https://registry\\.npmjs\\.org/)",
-    // Off by default: private registries are legitimate and would fire on
-    // every push. Turn it on once you know which registry you use.
     enabled: false,
   },
   {

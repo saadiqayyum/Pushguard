@@ -26,36 +26,33 @@ type ScanTarget = {
 }
 
 const ALL_REPOS = ""
-/** Empty means "whatever GitHub says the default is", resolved server-side. */
+// Empty means "whatever GitHub says the default is", resolved server-side.
+const NO_AI = "none"
 const DEFAULT_BRANCH = ""
 // Radix Select refuses an empty item value, so the two "no choice" options need
 // a name of their own on the way in and out.
 const ALL_REPOS_VALUE = "__all__"
 const DEFAULT_BRANCH_VALUE = "__default__"
 
-/**
- * The scan picker. There is deliberately no text field: a box the reader types a
- * repository into makes *us* decide what they may read, and we are not the ones
- * who know. Everything offered here came back from GitHub for this user's own
- * token, so the list is the answer rather than a filter over one.
- */
+// The scan picker. There is deliberately no text field: a box the reader types a.
 export function ScanPicker({
   installUrl,
   initialAccount,
   initialRepo,
+  aiKeys = [],
   onStarted,
 }: {
   installUrl: string | null
-  /** From a /scan/owner[/repo] deep link. An opening selection, never a grant. */
   initialAccount?: string
   initialRepo?: string | null
-  /** Lets a dialog close itself once the scan is on its way. */
+  aiKeys?: { id: string; label: string; model: string }[]
   onStarted?: () => void
 }) {
   const [targets, setTargets] = useState<ScanTarget[] | null>(null)
   const [account, setAccount] = useState("")
   const [repo, setRepo] = useState(ALL_REPOS)
   const [branch, setBranch] = useState(DEFAULT_BRANCH)
+  const [aiKey, setAiKey] = useState(NO_AI)
   const [branches, setBranches] = useState<string[] | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -65,9 +62,6 @@ export function ScanPicker({
     api<ScanTarget[]>("/api/scan-targets")
       .then((loaded) => {
         setTargets(loaded)
-        // A deep link opens on what it named, but only if GitHub listed it for
-        // this user. Anything else falls back to the first account they have,
-        // and the callout below explains why.
         const wanted = loaded.find((target) => target.account === initialAccount)
         setAccount(wanted?.account ?? loaded[0]?.account ?? "")
         if (wanted && initialRepo && wanted.repos.includes(initialRepo)) setRepo(initialRepo)
@@ -79,16 +73,12 @@ export function ScanPicker({
 
   const selected = targets?.find((target) => target.account === account)
 
-  // One repository's branches never apply to another, so the two move together.
   function selectRepo(next: string) {
     setRepo(next)
     setBranch(DEFAULT_BRANCH)
     setBranches(null)
   }
 
-  // Fetch only. Clearing the previous repository's branches belongs in the
-  // handler that changed the repository, doing it here would set state during
-  // render and cascade.
   useEffect(() => {
     if (repo === ALL_REPOS || !selected) return
     let current = true
@@ -96,15 +86,11 @@ export function ScanPicker({
       `/api/scan-branches?installationId=${selected.installationId}&repo=${encodeURIComponent(repo)}`,
     )
       .then((loaded) => current && setBranches(loaded.branches))
-      // A branch list that will not load is not worth blocking a scan over: the
-      // server falls back to the default branch when none is sent.
       .catch(() => current && setBranches([]))
     return () => {
       current = false
     }
   }, [repo, selected])
-  // The link named something GitHub did not list for this user: either the app
-  // is not installed there, or they cannot read it. Both end at the same button.
   const missingTarget =
     targets !== null &&
     targets.length > 0 &&
@@ -118,14 +104,13 @@ export function ScanPicker({
     setBusy(true)
     setError(null)
     try {
-      // A scan of twenty repositories is a page, not a panel. Hand off to it
-      // rather than growing the form into a report.
       const scan = await api<ScanView>("/api/scans", {
           method: "POST",
         body: {
           installationId: selected.installationId,
           ...(repo === ALL_REPOS ? {} : { repo }),
           ...(repo !== ALL_REPOS && branch !== DEFAULT_BRANCH ? { branch } : {}),
+          ...(aiKey === NO_AI ? {} : { aiKey }),
         },
       })
       onStarted?.()
@@ -141,8 +126,6 @@ export function ScanPicker({
     return <p className="text-sm text-[var(--ink-soft)]">Loading your repositories…</p>
   }
 
-  // No installations means nothing to pick, and the only useful next step is
-  // installing. So that is the whole of the empty state.
   if (targets?.length === 0) {
     return (
       <InstallCallout
@@ -234,11 +217,31 @@ export function ScanPicker({
           </label>
         )}
 
+        {aiKeys.length > 0 && (
+          <label className="min-w-0 flex-1 space-y-1.5">
+            <span className="text-xs font-medium text-muted-foreground">AI review</span>
+            <Select value={aiKey} onValueChange={setAiKey}>
+              <SelectTrigger className="h-11">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={NO_AI}>Pattern rules only</SelectItem>
+                {aiKeys.map((entry) => (
+                  <SelectItem key={entry.id} value={entry.id}>
+                    {entry.label} · {entry.model}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </label>
+        )}
+
         <Button type="submit" size="lg" disabled={busy || !selected} className="h-11 shrink-0">
           {busy ? <Loader2 className="size-4 animate-spin" /> : <Search className="size-4" />}
           Scan
         </Button>
       </form>
+
 
       {error && (
         <p className="rounded-lg border border-[var(--flag)]/30 bg-[var(--flag-wash)] px-4 py-3 text-sm text-[var(--flag)]">
@@ -252,7 +255,6 @@ export function ScanPicker({
 
 export function ScanReport({ initial, installUrl }: { initial: ScanView; installUrl: string | null }) {
   const [scan, setScan] = useState(initial)
-  // The repo currently being filed, or "*" for everything left.
   const [filing, setFiling] = useState<string | null>(null)
   const [failures, setFailures] = useState<Record<string, string>>({})
   const pending = scan.status === "queued" || scan.status === "running"
@@ -263,7 +265,6 @@ export function ScanReport({ initial, installUrl }: { initial: ScanView; install
       try {
         setScan(await api<ScanView>(`/api/scans/${scan.id}`))
       } catch {
-        // A transient poll failure is not a scan failure; the next tick retries.
       }
     }, POLL_MS)
     return () => clearInterval(timer)
@@ -276,8 +277,6 @@ export function ScanReport({ initial, installUrl }: { initial: ScanView; install
         `/api/scans/${scan.id}/file`,
         { method: "POST", body: repos ? { repos } : {} },
       )
-      // Merge rather than replace: a partial success must not erase what was
-      // filed on an earlier attempt.
       const merged = [...scan.filed]
       for (const entry of result.filed) {
         if (!merged.some((existing) => existing.repo === entry.repo)) merged.push(entry)
@@ -418,11 +417,7 @@ export function ScanReport({ initial, installUrl }: { initial: ScanView; install
   )
 }
 
-/**
- * Nothing to scan is not an error the reader caused, and a red box gives them
- * nothing to do about it. The only useful next step is installing, so that is
- * what the panel offers, primary action, one click, no dead end.
- */
+// Nothing to scan is not an error the reader caused, and a red box gives them.
 function InstallCallout({
   title,
   message,
@@ -450,7 +445,7 @@ function InstallCallout({
         <div className="flex flex-wrap items-center gap-4">
           <a
             href={installUrl}
-            className="mono flex h-10 items-center gap-2 rounded-lg bg-[var(--ink)] px-4 text-sm font-medium text-[var(--paper)] transition-opacity hover:opacity-85"
+            className="mono flex h-10 items-center gap-2 rounded-lg bg-[var(--brand)] px-4 text-sm font-medium text-[var(--paper)] transition-opacity hover:opacity-85"
           >
             Install Pushguard
             <ArrowUpRight className="size-3.5" />
@@ -468,7 +463,7 @@ function InstallCallout({
   )
 }
 
-/** Says which branch was read, how far back, and links the range on GitHub. */
+// Says which branch was read, how far back, and links the range on GitHub.
 function ReadHeader({
   read,
   findings,
@@ -512,8 +507,6 @@ function ReadHeader({
           {findings === 0 && " · clean"}
         </p>
 
-        {/* Reporting is per repository because an issue is per repository, and
-            one repository refusing, issues disabled, say, must not stop the rest. */}
         {filed ? (
           <a
             href={filed.url}
@@ -565,8 +558,6 @@ function Finding({ finding, read }: { finding: ScanFinding; read: ScanRepo }) {
             {finding.files.map((file) => (
               <a
                 key={file}
-                // Pinned to the commit that was read rather than to the branch,
-                // so the link still shows what was flagged after the next push.
                 href={`https://github.com/${finding.repo}/blob/${read.headSha}/${file}`}
                 target="_blank"
                 rel="noreferrer"
@@ -578,8 +569,8 @@ function Finding({ finding, read }: { finding: ScanFinding; read: ScanRepo }) {
           </p>
         )}
         {finding.lines.map((line, index) => (
-          <p key={index} className="diff-line">
-            + {line.trim()}
+          <p key={index} className={finding.prose ? "diff-note" : "diff-line"}>
+            {finding.prose ? line.trim() : `+ ${line.trim()}`}
           </p>
         ))}
       </div>

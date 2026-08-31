@@ -6,14 +6,16 @@ import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { ScanPicker } from "@/components/scan-panel"
 
-/**
- * Starting a scan, behind a button.
- *
- * The three pickers used to sit permanently above the scan list, so the page
- * opened on a form rather than on the results it exists to show. Same shape as
- * Rules: a header action that opens a dialog.
- */
-export function NewScanDialog({ installUrl, note }: { installUrl: string | null; note: string }) {
+// Starting a scan, behind a button.
+export function NewScanDialog({
+  installUrl,
+  note,
+  aiKeys = [],
+}: {
+  installUrl: string | null
+  note: string
+  aiKeys?: { id: string; label: string; model: string }[]
+}) {
   const [open, setOpen] = useState(false)
 
   return (
@@ -28,7 +30,7 @@ export function NewScanDialog({ installUrl, note }: { installUrl: string | null;
           <DialogHeader>
             <DialogTitle>New scan</DialogTitle>
           </DialogHeader>
-          <ScanPicker installUrl={installUrl} onStarted={() => setOpen(false)} />
+          <ScanPicker installUrl={installUrl} aiKeys={aiKeys} onStarted={() => setOpen(false)} />
           <p className="text-xs text-muted-foreground">{note}</p>
         </DialogContent>
       </Dialog>

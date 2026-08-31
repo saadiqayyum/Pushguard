@@ -8,14 +8,14 @@
  *
  *   MONGODB_URI=... npx tsx scripts/audit-stored-rules.ts
  */
-import { rulesCollection } from "../lib/db"
+import { rules } from "../lib/db"
 import { ruleSchema } from "../schemas/rule"
 import { checkRegexSafety } from "../schemas/rule-safety"
 
 const REGEX_FIELDS = ["added_lines", "commit_message"] as const
 
 async function main(): Promise<void> {
-  const docs = await (await rulesCollection()).find({}).toArray()
+  const docs = await rules().find({}).toArray()
   let unsafe = 0
   let unparseable = 0
 

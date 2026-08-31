@@ -2,14 +2,7 @@ import { z } from "zod";
 
 const commitSchema = z.object({
   id: z.string(),
-  // Kept because a message is evidence, not decoration. A direct push whose
-  // commit reads "Merge pull request #15 from ..." renders in GitHub's timeline
-  // next to real merges and reads as reviewed code; nothing about the push
-  // itself gives that away.
   message: z.string().default(""),
-  // Git lets any author name be set locally, so this is what the commit
-  // *claims*. `sender.login` on the push is what GitHub authenticated. The gap
-  // between the two is the signal.
   author: z
     .object({
       name: z.string().optional(),
@@ -32,8 +25,6 @@ export const pushPayloadSchema = z.object({
   repository: z.object({
     full_name: z.string(),
     private: z.boolean().default(true),
-    // Free on every push, so the stored default never goes stale between
-    // `repository.edited` events.
     default_branch: z.string().optional(),
     owner: z.object({ login: z.string() }),
   }),
@@ -52,8 +43,6 @@ export const installationPayloadSchema = z.object({
     id: z.number(),
     account: z.object({ login: z.string(), type: z.string().default("User") }),
   }),
-  // Present on created/unsuspend; absent on delete. Lets us seed the repo list
-  // without an API call.
   repositories: z.array(repoRefSchema).optional(),
   sender: z.object({ login: z.string() }),
 });
@@ -109,8 +98,6 @@ export const repositoryPayloadSchema = z.object({
     default_branch: z.string().optional(),
     owner: z.object({ login: z.string() }),
   }),
-  // A rename arrives as `renamed` with the old name here, so the stored record
-  // can be moved rather than orphaned under a name that no longer exists.
   changes: z
     .object({
       repository: z
@@ -150,7 +137,6 @@ export const organizationPayloadSchema = z.object({
   action: z.string(),
   organization: z.object({ login: z.string() }),
   membership: z.object({ user: z.object({ login: z.string() }) }).optional(),
-  // A rename arrives with the previous login here.
   changes: z
     .object({ login: z.object({ from: z.string() }).optional() })
     .optional(),
@@ -168,8 +154,6 @@ export const issuePayloadSchema = z.object({
   }),
   repository: z.object({ full_name: z.string() }),
   sender: z.object({ login: z.string(), type: z.string().optional() }),
-  // Present on issue_comment. The body is mirrored so the conversation can be
-  // read in the app rather than only on github.com.
   comment: z
     .object({
       id: z.number(),

@@ -1,11 +1,4 @@
-/**
- * The row above every table: how many rows on the left, the controls on the
- * right. Page-level actions ("New rule", "New scan") live here too rather than
- * beside the heading, so every list has the same one place to look.
- *
- * Below `sm` it stacks: the count on its own line, the controls wrapping under
- * it. Kept as one row it pushed the last control off the screen.
- */
+// The row above every table: how many rows on the left, the controls on the.
 export function TableToolbar({
   count,
   noun,
@@ -16,13 +9,9 @@ export function TableToolbar({
 }: {
   count: number;
   noun: string;
-  /** Defaults to `noun` + s. Pass it when that is wrong ("14 selected"). */
   plural?: string;
-  /** Act on the selection. */
   actions?: React.ReactNode;
-  /** The page's main action. Sits last, where the eye ends. */
   primary?: React.ReactNode;
-  /** Change what is listed: filters, switchers, settings. */
   children?: React.ReactNode;
 }) {
   return (

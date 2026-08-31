@@ -4,6 +4,8 @@ import type { RuleRow } from "@/components/rule-types"
 import { auth, memberScopes } from "@/lib/auth"
 import { resolveRules, serializeResolvedRule } from "@/lib/rules"
 import { catalogRules, PACKS } from "@/lib/rules/catalog"
+import { db, installationForDisplay } from "@/lib/db"
+import { aiRuleSchema } from "@/schemas/ai-rule"
 import { parsePaging } from "@/lib/paging"
 import { resolveTenant } from "@/lib/tenant"
 
@@ -36,36 +38,59 @@ export default async function RulesPage({
   const tenant = await resolveTenant(memberScopes({ login: session.login ?? "", orgs: session.orgs ?? [] }))
   if (!tenant.current) return null
 
+  const installation = await installationForDisplay(tenant.current.org)
+  const aiKeys = (installation?.aiKeys ?? []).map((key) => ({
+    id: key.id,
+    label: key.label,
+    model: key.model,
+  }))
+
   let rows: RuleRow[] = []
   let total = 0
-  let catalogActive = 0
   let loadError = false
   try {
-    // The catalog plus this account's changes, not the collection: querying the
-    // table would show only the rules somebody has edited.
     const all = (await resolveRules(tenant.current.installedBy)).sort((a, b) =>
       a.id.localeCompare(b.id),
     )
-    // Only what this account wrote or changed. The catalog is active either
-    // way, and putting all 76 rows here hid the few that are actually theirs.
     const resolved = all.filter((rule) => rule.origin !== "catalog")
-    rows = resolved.slice(paging.skip, paging.skip + paging.perPage).map(serializeResolvedRule)
-    total = resolved.length
-    catalogActive = all.filter((rule) => rule.origin === "catalog" && rule.enabled).length
+    const aiDocs = await db.aiRules()
+      .find({ owner: tenant.current.installedBy })
+      .toArray()
+    const aiRows: RuleRow[] = aiDocs.flatMap((doc) => {
+      const parsed = aiRuleSchema.safeParse(doc.body)
+      if (!parsed.success) return []
+      return [
+        {
+          id: parsed.data.id,
+          ruleId: parsed.data.id,
+          kind: "ai" as const,
+          pack: null,
+          origin: "custom" as const,
+          body: parsed.data,
+          enabled: doc.enabled,
+          updatedAt: doc.updatedAt.toISOString(),
+        },
+      ]
+    })
+
+    const merged = [...resolved.map(serializeResolvedRule), ...aiRows].sort((a, b) =>
+      a.ruleId.localeCompare(b.ruleId),
+    )
+    rows = merged.slice(paging.skip, paging.skip + paging.perPage)
+    total = merged.length
   } catch {
     loadError = true
   }
 
   return (
     <RulesView
-      orgs={tenant.installations.map((i) => i.org)}
       initialRules={rows}
       catalog={catalogRules}
       catalogPacks={[...PACKS]}
-      catalogActive={catalogActive}
       loadError={loadError}
       paging={{ ...paging, total, hasMore: paging.skip + rows.length < total }}
       scopeOptions={scopeOptions(tenant.installations)}
+      aiKeys={aiKeys}
     />
   )
 }

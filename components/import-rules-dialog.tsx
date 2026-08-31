@@ -9,13 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Textarea } from "@/components/ui/textarea"
 import { api, ApiClientError } from "@/lib/api-client"
 
-/**
- * Import a rules file.
- *
- * Paste or upload, YAML or JSON, validated against the same schema as the
- * repository's `rules.example.yaml`. A file is read in the browser and sent as
- * text, so there is no upload endpoint and no temporary storage to clean up.
- */
+// Import a rules file.
 export function ImportRulesDialog() {
   const [open, setOpen] = useState(false)
   const [content, setContent] = useState("")
@@ -37,8 +31,6 @@ export function ImportRulesDialog() {
       setContent("")
       router.refresh()
     } catch (cause) {
-      // The schema's message names the offending field and rule, so show it
-      // rather than a generic failure.
       toast.error(cause instanceof ApiClientError ? cause.message : "Could not import that file")
     } finally {
       setBusy(false)
@@ -63,10 +55,6 @@ export function ImportRulesDialog() {
             updated; the rest are added.
           </p>
 
-          {/* Two starting points: the shipped defaults for someone writing their
-              first file, and their own rules for a round trip through an editor
-              or a model. Both are generated from what the app runs, so neither
-              can describe a format the importer would reject. */}
           <div className="flex flex-wrap gap-2">
             <Button variant="outline" size="sm" asChild>
               <a href="/api/rules/export?example=1" download>

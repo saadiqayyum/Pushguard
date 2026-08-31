@@ -20,13 +20,7 @@ import type { NavLink } from "@/components/site-chrome"
 const isActive = (pathname: string, href: string) =>
   href === "/dashboard" ? pathname === href : pathname.startsWith(href)
 
-/**
- * The nav links: inline on a wide screen, behind a sheet on a narrow one.
- *
- * They were one wrapping list before, which is why they spilled out of a header
- * with a fixed height. Nothing wraps now; below `md` the list moves into the
- * sheet that is already part of the component library.
- */
+// The nav links: inline on a wide screen, behind a sheet on a narrow one.
 export function NavLinks({ links }: { links: NavLink[] }) {
   const pathname = usePathname()
   const [open, setOpen] = useState(false)

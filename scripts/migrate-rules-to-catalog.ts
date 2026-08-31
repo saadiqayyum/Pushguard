@@ -1,3 +1,4 @@
+import { db } from "@/lib/db"
 /**
  * Move an account off seeded rule copies and onto the catalog.
  *
@@ -18,7 +19,6 @@
  *   npm run migrate:catalog          # what would happen
  *   npm run migrate:catalog -- --apply
  */
-import { rulesCollection } from "../lib/db"
 import { catalogById } from "../lib/rules/catalog"
 import { ruleSchema, type Rule } from "../schemas/rule"
 
@@ -54,8 +54,7 @@ function fieldsThatDiffer(stored: Rule, shipped: Rule): string[] {
 
 async function main(): Promise<void> {
   const apply = process.argv.includes("--apply")
-  const rules = await rulesCollection()
-  const docs = await rules.find({}).toArray()
+  const docs = await db.rules().find({}).toArray()
 
   const redundant: { _id: string; owner: string; ruleId: string; as: string }[] = []
   const kept: { owner: string; ruleId: string; why: string; detail?: string[] }[] = []
@@ -103,7 +102,7 @@ async function main(): Promise<void> {
   }
 
   if (apply && redundant.length > 0) {
-    const result = await rules.deleteMany({ _id: { $in: redundant.map((row) => row._id) } })
+    const result = await db.rules().deleteMany({ _id: { $in: redundant.map((row) => row._id) } })
     console.log(`\nDeleted ${result.deletedCount} redundant copies.`)
   }
   console.log(

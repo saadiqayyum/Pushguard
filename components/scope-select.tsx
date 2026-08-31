@@ -16,12 +16,7 @@ import { cn } from "@/lib/utils"
 
 export type ScopeOption = { value: string; label: string; group: string }
 
-// shadcn's Combobox pattern (Popover + Command). Search, keyboard navigation,
-// grouping, empty state and a scrolling list all come from cmdk rather than
-// being hand-rolled here.
-//
-// Values not in the list (hand-written globs like `acme/payments-*`) still show
-// as chips, so editing a rule never silently drops them.
+// shadcn's Combobox pattern (Popover + Command). Search, keyboard navigation,.
 export function ScopeSelect({
   options,
   selected,
@@ -43,9 +38,6 @@ export function ScopeSelect({
 
   return (
     <div className="space-y-2">
-      {/* modal: the dialog locks page scroll with react-remove-scroll, and this
-          popover portals outside the dialog's subtree. So without its own lock
-          the list refuses wheel input even though it overflows. */}
       <Popover modal>
         <PopoverTrigger asChild>
           <Button variant="outline" className="w-full justify-between font-normal">

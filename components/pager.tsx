@@ -24,8 +24,6 @@ export function Pager({
 
   const first = total === 0 ? 0 : (page - 1) * perPage + 1
   const last = Math.min(page * perPage, total)
-  // basePath may already carry a query (the archived view), so the separator
-  // has to be chosen rather than assumed.
   const join = basePath.includes("?") ? "&" : "?"
   const href = (target: number) => (target === 1 ? basePath : `${basePath}${join}page=${target}`)
 

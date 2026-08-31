@@ -1,14 +1,9 @@
-/**
- * Python packaging, where `pip install` from source executes setup.py and a
- * .pth file in site-packages runs on every interpreter start.
- */
+// .pth file in site-packages runs on every interpreter start.
 export const python = [
   {
     id: "py-install-hook-added",
     description: "Python packaging hook that runs code at install time",
     severity: "critical",
-    // setup.py executes on `pip install` from source. cmdclass and build hooks
-    // are the documented way to run arbitrary code during it.
     paths: ["**/setup.py", "**/pyproject.toml", "**/setup.cfg", "**/conftest.py"],
     added_lines: "cmdclass|build_py|install_requires\\s*=|\\[build-system\\]|setuptools\\.setup",
   },
@@ -17,9 +12,7 @@ export const python = [
     description: "Dynamic execution or deserialisation that runs code",
     severity: "high",
     paths: ["**/*.py", "**/*.pyi"],
-    // pickle and marshal are code execution, not data formats.
     added_lines: "\\bexec\\(|\\beval\\(|__import__\\(|pickle\\.loads|marshal\\.loads|yaml\\.load\\(",
-    ai: "Is this dynamic execution or deserialisation of untrusted data a deliberate backdoor, or a legitimate use such as a plugin loader or a test fixture? Say what the code actually does if you can tell.",
   },
   {
     id: "py-obfuscated-payload",
@@ -39,8 +32,6 @@ export const python = [
     id: "py-sitecustomize",
     description: "A module Python imports automatically at interpreter start",
     severity: "critical",
-    // sitecustomize and usercustomize are imported by every interpreter start
-    // on the path. Nothing has to call them.
     paths: ["**/sitecustomize.py", "**/usercustomize.py", "**/*.pth"],
     change_type: ["added", "modified"],
   },

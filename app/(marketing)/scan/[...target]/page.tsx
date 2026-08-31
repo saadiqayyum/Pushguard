@@ -10,17 +10,7 @@ export const dynamic = "force-dynamic"
 
 export const metadata: Metadata = { title: "Scan. Pushguard" }
 
-/**
- * `/scan/owner` and `/scan/owner/repo`.
- *
- * A link that names what you want to scan, in the vscode.dev shape. The URL is
- * an intent and nothing more: it decides what the picker opens on, never what
- * may be read. `ScanPicker` still loads the accessible list from GitHub and
- * refuses anything absent from it, and `enqueueScan` checks again server-side.
- *
- * Signing in is the only thing that happens automatically. Starting the scan is
- * a button, so a refresh cannot quietly spend someone's daily quota.
- */
+// `/scan/owner` and `/scan/owner/repo`.
 export default async function ScanIntentPage({
   params,
 }: {
@@ -29,8 +19,6 @@ export default async function ScanIntentPage({
   const intent = parseScanIntent((await params).target)
   if (!intent) notFound()
 
-  // Round trip to GitHub and come back here. Already authorised, so the visitor
-  // usually sees a redirect rather than a screen.
   if (!(await auth())?.user) {
     redirect(`/api/scan-intent?target=${encodeURIComponent(intent.repo ?? intent.account)}`)
   }
@@ -43,7 +31,8 @@ export default async function ScanIntentPage({
       </h1>
       <p className="mt-5 max-w-xl text-sm leading-relaxed text-[var(--ink-soft)]">
         Reads up to {SCAN_COMMIT_WINDOW} commits on the default branch and reports what the rules
-        flag. Nothing is filed on GitHub until you say so.
+        flag. Pattern rules run on every scan; AI rules run too once the account has a model key.
+        Nothing is filed on GitHub until you say so.
       </p>
 
       <div className="mt-9">

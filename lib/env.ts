@@ -1,31 +1,31 @@
-import { z } from "zod"
+import { z } from "zod";
 
 const envSchema = z.object({
   MONGODB_URI: z.string().startsWith("mongodb"),
   GITHUB_APP_ID: z.string().min(1),
   GITHUB_APP_PRIVATE_KEY: z.string().includes("PRIVATE KEY"),
   GITHUB_WEBHOOK_SECRET: z.string().min(16),
-  // Set by the scheduler that drains the scan queue; when set, it is required.
   CRON_SECRET: z.string().min(16).optional(),
-  ANTHROPIC_API_KEY: z.string().min(1).optional(),
-  ANTHROPIC_BASE_URL: z.string().url().optional(),
+  ENCRYPTION_KEY: z.string().min(32).optional(),
   AUTH_SECRET: z.string().min(16),
   AUTH_GITHUB_ID: z.string().min(1),
   AUTH_GITHUB_SECRET: z.string().min(1),
-})
+});
 
-export type Env = z.infer<typeof envSchema>
+export type Env = z.infer<typeof envSchema>;
 
-let cached: Env | null = null
+let cached: Env | null = null;
 
 export function env(): Env {
   if (!cached) {
-    const parsed = envSchema.safeParse(process.env)
+    const parsed = envSchema.safeParse(process.env);
     if (!parsed.success) {
-      const missing = parsed.error.issues.map((i) => i.path.join(".")).join(", ")
-      throw new Error(`Invalid environment: ${missing}`)
+      const missing = parsed.error.issues
+        .map((i) => i.path.join("."))
+        .join(", ");
+      throw new Error(`Invalid environment: ${missing}`);
     }
-    cached = parsed.data
+    cached = parsed.data;
   }
-  return cached
+  return cached;
 }

@@ -11,21 +11,12 @@ import { formatTimestamp } from "@/lib/format"
 
 export const dynamic = "force-dynamic"
 
-/**
- * One alert, in full. `/dashboard/alerts/owner/repo/12`.
- *
- * The GitHub issue is still where people reply and close; this is where the
- * evidence lives. Clicking a row used to leave the app entirely, which meant
- * the matched rule, the lines that matched and who has touched it were only
- * ever visible on github.com, and the diff was not written down anywhere at
- * all.
- */
+// One alert, in full. `/dashboard/alerts/owner/repo/12`.
 export default async function AlertPage({ params }: { params: Promise<{ ref: string[] }> }) {
   const { ref } = await params
   const session = await auth()
   if (!session?.user) redirect("/signin")
 
-  // owner / repo / number
   const number = Number(ref[2])
   if (ref.length !== 3 || !Number.isInteger(number)) notFound()
 
@@ -113,9 +104,6 @@ export default async function AlertPage({ params }: { params: Promise<{ ref: str
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-1.5 text-sm">
-            {/* The card above is the push that opened the issue and never
-                changes. These are the later ones, which are different commits
-                by possibly different accounts. */}
             {alert.sightings!.map((sighting, index) => (
               <Row key={index} label={formatTimestamp(sighting.at)}>
                 <span className="flex flex-wrap items-center gap-x-2">
@@ -178,8 +166,14 @@ export default async function AlertPage({ params }: { params: Promise<{ ref: str
               )}
               {collapseLines(finding.lines).map(({ line, count }, i) => (
                 <div key={i} className="flex items-center gap-2">
-                  <p className="min-w-0 flex-1 overflow-x-auto whitespace-pre rounded bg-destructive/10 px-2 py-1 font-mono text-xs text-destructive">
-                    + {line.trim()}
+                  <p
+                    className={
+                      finding.prose
+                        ? "min-w-0 flex-1 whitespace-pre-wrap break-words rounded bg-destructive/10 px-2 py-1 text-xs leading-relaxed text-destructive"
+                        : "min-w-0 flex-1 overflow-x-auto whitespace-pre rounded bg-destructive/10 px-2 py-1 font-mono text-xs text-destructive"
+                    }
+                  >
+                    {finding.prose ? line.trim() : `+ ${line.trim()}`}
                   </p>
                   {count > 1 && (
                     <span className="shrink-0 text-xs text-muted-foreground">×{count}</span>
@@ -214,8 +208,6 @@ export default async function AlertPage({ params }: { params: Promise<{ ref: str
                   <span className="font-medium text-foreground">{comment.by}</span> ·{" "}
                   {formatTimestamp(comment.at)}
                 </p>
-                {/* Rendered as text, never as markup: this is what somebody typed
-                    into a public issue and it is not to be trusted as HTML. */}
                 <p className="whitespace-pre-wrap text-sm leading-relaxed">{comment.body}</p>
               </div>
             ))
@@ -251,9 +243,6 @@ export default async function AlertPage({ params }: { params: Promise<{ ref: str
                 .slice()
                 .reverse()
                 .map((entry, index) => (
-                  // Separators rather than flex gaps alone: the words run
-                  // together the moment a gap utility does not generate, and
-                  // "saadiqayyumcomment created30 Aug" is unreadable.
                   <p key={index} className="text-xs text-muted-foreground">
                     <span className="font-medium text-foreground">{entry.by ?? "Pushguard"}</span>
                     {" "}{entry.action}{" · "}{formatTimestamp(entry.at)}
@@ -267,15 +256,7 @@ export default async function AlertPage({ params }: { params: Promise<{ ref: str
   )
 }
 
-/**
- * Label and value side by side.
- *
- * The label width is an inline style, not a utility. Two attempts with
- * Tailwind arbitrary values failed silently here, `w-28` collapsed, and
- * `sm:grid-cols-[9rem_minmax(0,1fr)]` never generated at all, leaving a single
- * 864px column. A class that is not generated is indistinguishable from one
- * that is wrong, and this is a layout the page cannot be read without.
- */
+// Label and value side by side.
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-wrap gap-6">

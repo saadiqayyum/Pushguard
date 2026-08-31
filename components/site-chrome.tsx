@@ -1,26 +1,17 @@
 import Image from "next/image"
 import Link from "next/link"
+import { LayoutGrid } from "lucide-react"
 import { auth } from "@/lib/auth"
-import { installUrl } from "@/lib/install-url"
 import { NavLinks } from "@/components/nav-item"
 
 const NAV = [{ href: "/how-to-use", label: "How to use" }]
 
 export type NavLink = { href: string; label: string }
 
-/**
- * The one top bar, used by the marketing pages and the dashboard.
- *
- * The dashboard had a sidebar of its own, which meant two navigations to keep
- * in step and a logo that went nowhere. One sticky bar, one set of styles, and
- * the mark always returns to the front page.
- */
+// The one top bar, used by the marketing pages and the dashboard.
 export function TopNav({ links, children }: { links: NavLink[]; children?: React.ReactNode }) {
   return (
-    <header className="sticky top-0 z-30 border-b border-[var(--rule)] bg-[var(--paper)]">
-      {/* Links sit with the actions rather than centred: the public pages have
-          one of them, and a single item alone in the middle of a wide bar reads
-          as a mistake. */}
+    <header className="sticky top-0 z-30 border-b border-[var(--rule)] bg-[var(--paper)]/80 backdrop-blur-md">
       <div className="mx-auto w-full max-w-5xl px-4 sm:px-6 lg:px-8 flex h-16 items-center gap-4">
         <Link href="/" className="flex shrink-0 items-center gap-2.5">
           <Image src="/logo.svg" alt="" width={24} height={24} />
@@ -36,40 +27,25 @@ export function TopNav({ links, children }: { links: NavLink[]; children?: React
   )
 }
 
+// One action in the bar. Installing is the page's own call to action, and a
+// second GitHub button beside Sign in only asked which one a visitor wanted.
 export async function SiteHeader() {
   const signedIn = Boolean((await auth())?.user)
-  const install = installUrl()
 
   return (
     <TopNav links={NAV}>
-      {signedIn ? (
-        <Link
-          href="/dashboard"
-          className="flex h-9 items-center rounded-lg bg-[var(--ink)] px-4 text-sm font-medium text-[var(--paper)] transition-opacity hover:opacity-90"
-        >
-          Dashboard
-        </Link>
-      ) : (
-        <>
-          <Link href="/signin" className="text-sm text-[var(--ink-soft)] transition-colors hover:text-[var(--ink)]">
-            Sign in
-          </Link>
-          {install && (
-            <a
-              href={install}
-              className="flex h-9 items-center gap-2 rounded-lg bg-[var(--ink)] px-4 text-sm font-medium text-[var(--paper)] transition-opacity hover:opacity-90"
-            >
-              <GitHubMark className="size-4" />
-              Install
-            </a>
-          )}
-        </>
-      )}
+      <Link
+        href={signedIn ? "/dashboard" : "/signin"}
+        className="flex h-9 items-center gap-2 rounded-lg bg-[var(--brand)] px-4 text-sm font-medium text-[var(--paper)] transition-opacity hover:opacity-90"
+      >
+        {signedIn ? <LayoutGrid className="size-4" /> : <GitHubMark className="size-4" />}
+        {signedIn ? "Dashboard" : "Sign in"}
+      </Link>
     </TopNav>
   )
 }
 
-/** GitHub's mark. On a button whose destination is GitHub, this is the affordance. */
+// GitHub's mark. On a button whose destination is GitHub, this is the affordance.
 export function GitHubMark({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden className={className}>
@@ -78,14 +54,7 @@ export function GitHubMark({ className }: { className?: string }) {
   )
 }
 
-/**
- * The install call to action.
- *
- * Four pages had their own copy of this, same anchor, same GitHub mark, same
- * "ask the operator" fallback, three slightly different sets of classes. One of
- * them was still on the old button language after a rename, which is what four
- * copies always eventually means.
- */
+// The install call to action.
 export function InstallButton({
   href,
   children = "Install Pushguard",
@@ -103,7 +72,7 @@ export function InstallButton({
   return (
     <a
       href={href}
-      className="flex h-12 items-center gap-2.5 rounded-xl bg-[var(--ink)] px-6 font-sans text-[0.9375rem] font-medium text-[var(--paper)] transition-opacity hover:opacity-90"
+      className="flex h-12 items-center gap-2.5 rounded-xl bg-[var(--brand)] px-6 font-sans text-[0.9375rem] font-medium text-[var(--paper)] transition-opacity hover:opacity-90"
     >
       <GitHubMark className="size-[1.125rem]" />
       {children}
@@ -111,7 +80,7 @@ export function InstallButton({
   )
 }
 
-/** The quieter action that sits next to it. */
+// The quieter action that sits next to it.
 export function SecondaryLink({ href, children }: { href: string; children: React.ReactNode }) {
   return (
     <Link

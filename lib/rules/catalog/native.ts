@@ -1,8 +1,4 @@
-/**
- * C, C++, Rust and Go: compiled languages, where the build system is the soft
- * spot. Nobody reads a Makefile in review, and a build script runs with the
- * developer's privileges before a single line of the program does.
- */
+// C, C++, Rust and Go: compiled languages, where the build system is the soft.
 const C_SOURCE = ["**/*.c", "**/*.cc", "**/*.cpp", "**/*.cxx", "**/*.h", "**/*.hpp", "**/*.hxx", "**/*.inl"]
 const C_BUILD = [
   "**/Makefile",
@@ -23,8 +19,6 @@ export const cpp = [
     id: "cpp-build-runs-command",
     description: "A build file that shells out during configure or build",
     severity: "critical",
-    // execute_process and add_custom_command run at configure time, before
-    // anyone has compiled or read the code they are about to build.
     paths: C_BUILD,
     added_lines:
       "execute_process|add_custom_command|add_custom_target|\\$\\(shell |POST_BUILD|run_command\\(",
@@ -42,14 +36,11 @@ export const cpp = [
     severity: "high",
     paths: C_SOURCE,
     added_lines: "\\bsystem\\(|\\bpopen\\(|\\bexecve?\\(|execlp?\\(|CreateProcess|ShellExecute",
-    ai: "Is this process execution a deliberate backdoor or a legitimate part of the program, such as a build tool, a test harness, or a documented subprocess call? Say what the code actually does if you can tell.",
   },
   {
     id: "cpp-constructor-attribute",
     description: "Code marked to run before main()",
     severity: "critical",
-    // __attribute__((constructor)) and DllMain execute on load, before main.
-    // A library linked anywhere in the tree gets to run first.
     paths: C_SOURCE,
     added_lines: "__attribute__\\s*\\(\\s*\\(\\s*constructor|DllMain|_pragma\\s*\\(\\s*\"init",
   },
@@ -88,8 +79,6 @@ export const go = [
     id: "go-module-replace",
     description: "A replace or exclude directive repointing a dependency",
     severity: "critical",
-    // `replace` silently substitutes a module, including for a local path or a
-    // fork nobody reviewed. The import statements are unchanged.
     paths: ["**/go.mod"],
     added_lines: "^\\s*replace |^\\s*exclude ",
   },
@@ -123,8 +112,6 @@ export const rust = [
     severity: "low",
     paths: ["**/*.rs"],
     added_lines: "\\bunsafe\\s*\\{",
-    // Off by default: unsafe is ordinary in systems code. Context for a feed,
-    // not a ticket on its own.
     enabled: false,
   },
 ] as const

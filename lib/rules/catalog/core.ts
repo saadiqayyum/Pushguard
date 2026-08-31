@@ -1,13 +1,4 @@
-/**
- * Rules that hold whatever the repository is written in.
- *
- * Nothing here tests a file extension, because none of these attacks are a
- * property of a language. A force push rewrites C++ history exactly as it
- * rewrites TypeScript history; a bidi override reorders a Go comment as
- * happily as a JavaScript one; an account that has never pushed here before is
- * the same fact in every repository. Anything that needs a `paths` glob to make
- * sense belongs in an ecosystem pack, not in this one.
- */
+// Rules that hold whatever the repository is written in.
 export const core = [
   {
     id: "force-push",
@@ -26,18 +17,12 @@ export const core = [
     description: "A character from another script sitting inside an otherwise Latin identifier",
     severity: "high",
     unicode_risk: "confusables",
-    // Off by default. Any codebase that legitimately writes identifiers or
-    // content in a non-Latin script trips this constantly, and that is a
-    // reasonable thing to do.
     enabled: false,
   },
   {
     id: "hidden-by-padding",
     description: "A line indented far enough to push its code out of view in a diff",
     severity: "high",
-    // Deliberately no trailing \S: with padding heavier than the 2000-character
-    // scan cap the whole slice is whitespace, and requiring code after it would
-    // miss the heaviest padding, which is the case that matters most.
     added_lines: "^[ \\t]{200,}",
   },
   {
@@ -59,7 +44,6 @@ export const core = [
     severity: "high",
     branches: ["main", "master", "release/*", "develop"],
     when: { unreviewed: true },
-    // Off by default: plenty of teams push straight to main and mean to.
     enabled: false,
   },
   {
@@ -117,7 +101,6 @@ export const core = [
     id: "editor-autorun-changed",
     description: "Editor config that runs commands on open was modified",
     severity: "high",
-    // Opening a checkout should not execute anything. These files make it.
     paths: [
       ".vscode/tasks.json",
       ".vscode/settings.json",
@@ -137,8 +120,6 @@ export const core = [
     id: "gitattributes-filter",
     description: "A .gitattributes filter, which runs a command on checkout",
     severity: "high",
-    // `filter=` drives clean/smudge commands: code execution on `git checkout`,
-    // configured from a file in the repository itself.
     paths: ["**/.gitattributes"],
     added_lines: "filter=",
   },

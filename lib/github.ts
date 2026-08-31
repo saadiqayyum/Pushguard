@@ -3,10 +3,15 @@ import { Octokit } from "@octokit/core"
 import { env } from "@/lib/env"
 import { AppError, type ErrorCode } from "@/lib/errors"
 import { logger } from "@/lib/logger"
-import { GITHUB_SEARCH_MAX_RESULTS, SCAN_COMMIT_WINDOW, type Paging } from "@/lib/paging"
+import { SCAN_COMMIT_WINDOW } from "@/lib/paging"
+import { scanRange } from "@/lib/scan-range"
 import type { ChangeType } from "@/schemas/rule"
 
-const DIFF_MAX_BYTES = 50_000
+// Forty times the old 50 KB. The cap exists because a diff has to be held in.
+const DIFF_MAX_BYTES = 2_000_000
+
+// The budget, for anything that has to explain it to a reader.
+export const DIFF_READ_BUDGET = "2 MB"
 
 let app: App | null = null
 
@@ -23,10 +28,7 @@ function client(installationId: number): Promise<Octokit> {
   return githubApp().getInstallationOctokit(installationId)
 }
 
-// GitHub's status code is the only thing that tells "you may not see this" apart
-// from "GitHub is having a bad day", and callers need that difference: one is
-// answered by installing the app, the other by waiting. Octokit puts it on the
-// thrown error, so map it here rather than letting every caller re-inspect.
+// GitHub's status code is the only thing that tells "you may not see this" apart.
 function codeFor(status: number | undefined): ErrorCode {
   if (status === 404) return "not_found"
   if (status === 401 || status === 403) return "forbidden"
@@ -77,34 +79,7 @@ export async function fetchAddedLines(
   return { addedLines, truncated }
 }
 
-// The one search that legitimately runs on an installation token: it happens
-// during webhook processing with no user in the request, is scoped to a single
-// repository the installation owns, and returns a boolean. Nothing about it
-// reaches a reader, so there is no access to narrow.
-export async function findOpenAlertBySha(installationId: number, targetRepo: string, sha: string): Promise<boolean> {
-  return github("search issues", async () => {
-    const response = await (await client(installationId)).request("GET /search/issues", {
-      q: `repo:${targetRepo} is:issue is:open "${sha}"`,
-    })
-    return response.data.total_count > 0
-  })
-}
-
-/**
- * Did this commit reach the branch through a pull request?
- *
- * Asks GitHub which pull requests contain the commit. Nothing back means it was
- * pushed straight at the branch, whatever its message claims: a commit reading
- * "Merge pull request #15 from ..." is just a string, and one with a single
- * parent was never a merge at all.
- *
- * Null on any failure, never true. The endpoint needs the Pull requests: Read
- * permission, and an installation that has not accepted it 403s. Treating that
- * as "unreviewed" would open a critical ticket for every push in the org the
- * moment somebody wrote the rule, so an unanswerable question stays unanswered.
- *
- * Requires: Pull requests: Read.
- */
+// Did this commit reach the branch through a pull request?
 export async function commitReachedViaPullRequest(
   installationId: number,
   repoFullName: string,
@@ -122,6 +97,180 @@ export async function commitReachedViaPullRequest(
       sha,
       status: (error as { status?: number }).status,
     })
+    return null
+  }
+}
+
+
+export type TreeEntry = { path: string; blobSha: string; size: number }
+
+export type RepoTree = {
+  entries: TreeEntry[]
+  truncated: boolean
+}
+
+// Every path in the repository at one commit, in a single request.
+export async function fetchRepoTree(
+  installationId: number,
+  repoFullName: string,
+  ref: string,
+): Promise<RepoTree> {
+  return github("read tree", async () => {
+    const response = await (await client(installationId)).request(
+      "GET /repos/{owner}/{repo}/git/trees/{tree_sha}",
+      { ...splitRepo(repoFullName), tree_sha: ref, recursive: "1" },
+    )
+    const entries = response.data.tree
+      .filter((node) => node.type === "blob" && node.path && node.sha)
+      .map((node) => ({ path: node.path!, blobSha: node.sha!, size: node.size ?? 0 }))
+    return { entries, truncated: Boolean(response.data.truncated) }
+  })
+}
+
+// Files per GraphQL request. Response size is the real ceiling, not node count.
+export const BLOB_BATCH = 40
+
+export type BlobBatch = {
+  files: Map<string, string>
+  remaining: number | null
+}
+
+// Many files in one request, by aliasing a query per path.
+export async function fetchBlobs(
+  installationId: number,
+  repoFullName: string,
+  sha: string,
+  paths: string[],
+): Promise<BlobBatch> {
+  const files = new Map<string, string>()
+  if (paths.length === 0) return { files, remaining: null }
+
+  return github("read blobs", async () => {
+    const octokit = await client(installationId)
+    const { owner, repo } = splitRepo(repoFullName)
+    const wanted = paths.slice(0, BLOB_BATCH)
+
+    const declarations = wanted.map((_, i) => `$e${i}: String!`).join(", ")
+    const selections = wanted
+      .map((_, i) => `f${i}: object(expression: $e${i}) { ... on Blob { text isTruncated } }`)
+      .join("\n      ")
+    const variables: Record<string, string> = { owner, repo }
+    wanted.forEach((path, i) => {
+      variables[`e${i}`] = `${sha}:${path}`
+    })
+
+    const result = await octokit.graphql<{
+      rateLimit?: { remaining: number }
+      repository: Record<string, { text?: string | null; isTruncated?: boolean } | null>
+    }>(
+      `query($owner: String!, $repo: String!, ${declarations}) {
+      rateLimit { remaining }
+      repository(owner: $owner, name: $repo) {
+      ${selections}
+      }
+    }`,
+      variables,
+    )
+
+    wanted.forEach((path, i) => {
+      const blob = result.repository?.[`f${i}`]
+      if (blob?.text && !blob.isTruncated) files.set(path, blob.text)
+    })
+
+    return { files, remaining: result.rateLimit?.remaining ?? null }
+  })
+}
+
+export type CompareFile = {
+  path: string
+  status: string
+  additions: number
+  deletions: number
+  patch?: string
+}
+
+// Per-file stats and hunks for one range. What a review needs to know where to
+// look, as opposed to the whole tree.
+export async function fetchCompareFiles(
+  installationId: number,
+  repoFullName: string,
+  base: string,
+  head: string,
+): Promise<{ files: CompareFile[]; truncated: boolean }> {
+  return github("compare files", async () => {
+    const response = await (await client(installationId)).request(
+      "GET /repos/{owner}/{repo}/compare/{basehead}",
+      { ...splitRepo(repoFullName), basehead: `${base}...${head}` },
+    )
+    const raw = (response.data.files ?? []) as {
+      filename: string
+      status: string
+      additions?: number
+      deletions?: number
+      patch?: string
+    }[]
+    return {
+      files: raw.map((file) => ({
+        path: file.filename,
+        status: file.status,
+        additions: file.additions ?? 0,
+        deletions: file.deletions ?? 0,
+        patch: file.patch,
+      })),
+      truncated: raw.length >= COMPARE_FILE_LIMIT,
+    }
+  })
+}
+
+export type DependencyChange = {
+  name: string
+  version: string
+  ecosystem: string
+  manifest: string
+  vulnerabilities: { severity: string; summary: string; advisory: string }[]
+}
+
+// Packages this range added, with any known advisories against them.
+// Null when the repository has no dependency graph enabled, which 404s.
+export async function fetchDependencyChanges(
+  installationId: number,
+  repoFullName: string,
+  base: string,
+  head: string,
+): Promise<DependencyChange[] | null> {
+  try {
+    const response = await (await client(installationId)).request(
+      "GET /repos/{owner}/{repo}/dependency-graph/compare/{basehead}",
+      { ...splitRepo(repoFullName), basehead: `${base}...${head}` },
+    )
+    const rows = response.data as unknown as {
+      change_type: string
+      name: string
+      version: string
+      ecosystem: string
+      manifest: string
+      vulnerabilities?: { severity: string; advisory_summary: string; advisory_ghsa_id: string }[]
+    }[]
+    return rows
+      .filter((row) => row.change_type === "added" && (row.vulnerabilities?.length ?? 0) > 0)
+      .map((row) => ({
+        name: row.name,
+        version: row.version,
+        ecosystem: row.ecosystem,
+        manifest: row.manifest,
+        vulnerabilities: (row.vulnerabilities ?? []).map((v) => ({
+          severity: v.severity,
+          summary: v.advisory_summary,
+          advisory: v.advisory_ghsa_id,
+        })),
+      }))
+  } catch (error) {
+    const status = (error as { status?: number }).status
+    if (status === 404 || status === 403) {
+      logger.info("dependency_graph_unavailable", { repo: repoFullName, status })
+      return null
+    }
+    logger.warn("dependency_review_failed", { repo: repoFullName, status })
     return null
   }
 }
@@ -153,11 +302,7 @@ export async function listInstallationRepos(installationId: number): Promise<Ins
   })
 }
 
-/**
- * Everyone who can read a repository, as GitHub computes it, org role, team
- * grants and direct collaboration already flattened into one list. Called from
- * webhooks and the reconciliation job, never from a request the frontend makes.
- */
+// Everyone who can read a repository, as GitHub computes it, org role, team.
 export type Collaborator = { login: string; write: boolean }
 
 export async function listRepoCollaborators(
@@ -179,8 +324,6 @@ export async function listRepoCollaborators(
       collaborators.push(
         ...response.data.map((user) => ({
           login: user.login,
-          // Triage is enough to close an issue; pull alone is not. Read access
-          // lets you see an alert, and closing one is a change to the record.
           write: Boolean(
             user.permissions?.push || user.permissions?.triage || user.permissions?.admin,
           ),
@@ -192,11 +335,7 @@ export async function listRepoCollaborators(
   })
 }
 
-/**
- * Branches and default branch on the installation's own credentials, for the
- * sync path. `listRepoBranches` above is the user-token variant; this one runs
- * from webhooks and the reconciliation job, where there is no user.
- */
+// Branches and default branch on the installation's own credentials, for the.
 export async function fetchRepoBranches(
   installationId: number,
   repoFullName: string,
@@ -219,7 +358,7 @@ export async function fetchRepoBranches(
   })
 }
 
-/** Members of one team, for the membership and team webhooks. */
+// Members of one team, for the membership and team webhooks.
 export async function listTeamMembers(installationId: number, org: string, teamSlug: string): Promise<string[]> {
   return github("list team members", async () => {
     const response = await (await client(installationId)).request(
@@ -230,7 +369,7 @@ export async function listTeamMembers(installationId: number, org: string, teamS
   })
 }
 
-/** Repositories one team can reach, for the same events. */
+// Repositories one team can reach, for the same events.
 export async function listTeamRepos(installationId: number, org: string, teamSlug: string): Promise<string[]> {
   return github("list team repositories", async () => {
     const response = await (await client(installationId)).request(
@@ -248,32 +387,6 @@ export type RepoBranches = {
   private?: boolean
 }
 
-// Branch names are a read of the repository, so this runs on the user's token
-// like every other read they can see. The caller checks the repository is in
-// their accessible list first; this only enumerates.
-export async function listRepoBranches(
-  userToken: string,
-  repoFullName: string,
-  limit = 100,
-): Promise<RepoBranches> {
-  return github("list branches", async () => {
-    const octokit = new Octokit({ auth: userToken })
-    const { owner, repo } = splitRepo(repoFullName)
-    const [meta, branches] = await Promise.all([
-      octokit.request("GET /repos/{owner}/{repo}", { owner, repo }),
-      octokit.request("GET /repos/{owner}/{repo}/branches", { owner, repo, per_page: limit }),
-    ])
-    const names = branches.data.map((branch) => branch.name)
-    const defaultBranch = meta.data.default_branch
-    // Default first: it is what a scan uses when nothing is chosen, so it should
-    // be what the picker opens on rather than whatever sorts first.
-    return {
-      defaultBranch,
-      branches: [defaultBranch, ...names.filter((name) => name !== defaultBranch)],
-    }
-  })
-}
-
 export type CreatedIssue = { html_url: string; number: number }
 
 export async function createAlertIssue(
@@ -282,8 +395,6 @@ export async function createAlertIssue(
   title: string,
   body: string,
   labels: string[],
-  // GitHub silently ignores assignees without push access to the repo, and
-  // cannot assign a team. So this is best-effort, never a reason to fail.
   assignees: string[] = [],
 ): Promise<CreatedIssue> {
   return github("create issue", async () => {
@@ -335,48 +446,7 @@ export type AlertIssue = {
   labels: { name: string }[]
 }
 
-// Alerts live in whichever repo triggered them, so the feed is an account-wide
-// search for the label rather than a single-repo issue list.
-//
-// Searched with the **user's** token, never the installation's. An installation
-// token sees every repository the app was granted, so searching with it returned
-// alerts, titles, repository names, issue links, from private repositories the
-// reader has no access to on GitHub. The user's token returns only what they can
-// already see, which also keeps `total` and paging honest: filtering the results
-// afterwards would have shown "25 of 100" above three rows.
-export async function listAlertIssues(
-  userToken: string,
-  account: string,
-  accountType: "User" | "Organization",
-  paging: Paging,
-): Promise<AlertPage> {
-  return github("search alert issues", async () => {
-    const scope = accountType === "Organization" ? "org" : "user"
-    const response = await new Octokit({ auth: userToken }).request("GET /search/issues", {
-      q: `${scope}:${account} is:issue label:pushguard`,
-      sort: "created",
-      order: "desc",
-      per_page: paging.perPage,
-      page: paging.page,
-    })
-    const total = Math.min(response.data.total_count, GITHUB_SEARCH_MAX_RESULTS)
-    const issues = response.data.items.map((issue) => ({
-      number: issue.number,
-      // repository_url is .../repos/{owner}/{repo}
-      repo: issue.repository_url.split("/repos/")[1] ?? "",
-      title: issue.title,
-      html_url: issue.html_url,
-      state: issue.state,
-      created_at: issue.created_at,
-      labels: issue.labels.map((label) => ({ name: typeof label === "string" ? label : label.name ?? "" })),
-    }))
-    return { issues, total, hasMore: paging.skip + issues.length < total }
-  })
-}
-
-// Direct lookup: is this app installed on the given user/org? Lets the
-// dashboard self-register installations even when the installation webhook
-// was missed.
+// Direct lookup: is this app installed on the given user/org? Lets the.
 export async function findInstallationForAccount(account: string): Promise<number | null> {
   const octokit = githubApp().octokit
   for (const route of ["GET /users/{account}/installation", "GET /orgs/{account}/installation"] as const) {
@@ -407,7 +477,6 @@ export async function listInstallationTeams(
   })
 }
 
-
 // GitHub's compare endpoint stops listing files at 300.
 const COMPARE_FILE_LIMIT = 300
 
@@ -418,9 +487,7 @@ export type RepoSnapshot = {
   addedLines: string[]
   commits: number
   truncated: boolean
-  /** Newest commit read. What a file link should point at. */
   headSha: string
-  /** Oldest commit in the window; null when the repo has a single commit. */
   baseSha: string | null
 }
 
@@ -447,23 +514,16 @@ function collectAddedLines(files: ChangedFile[]): { addedLines: string[]; trunca
   return { addedLines, truncated: budget <= 0 }
 }
 
-// Recent history for one repository, shaped like the push payload the engine
-// already understands. Three requests: metadata, the commit window, and one
-// compare across it.
+// Recent history for one repository, shaped like the push payload the engine.
 export async function fetchRepoSnapshot(
   repoFullName: string,
   installationId: number,
-  // A ref that does not exist 404s on the commits call below, which surfaces as
-  // not_found rather than an empty scan that looks like a clean one.
   requestedBranch?: string,
 ): Promise<RepoSnapshot> {
   return github("read repository", async () => {
     const octokit = await client(installationId)
     const { owner, repo } = splitRepo(repoFullName)
 
-    // Only asked when the branch is unknown. A caller that already holds the
-    // default branch. Because a webhook told us, saves a request per
-    // repository, which on a twenty-repository scan is twenty.
     const branch =
       requestedBranch ||
       (await octokit.request("GET /repos/{owner}/{repo}", { owner, repo })).data.default_branch
@@ -479,22 +539,35 @@ export async function fetchRepoSnapshot(
       return { ...base, files: [], addedLines: [], commits: 0, truncated: false, headSha: "", baseSha: null }
     }
 
-    // A repository with a single commit has nothing to compare against, so read
-    // that commit directly rather than reporting an empty scan.
+    const range = scanRange(history.data)!
     const head = history.data[0].sha
-    const baseSha = history.data.length === 1 ? null : history.data.at(-1)!.sha
-    const changed =
-      history.data.length === 1
-        ? (await octokit.request("GET /repos/{owner}/{repo}/commits/{ref}", { owner, repo, ref: head })).data.files
-        : (
-            await octokit.request("GET /repos/{owner}/{repo}/compare/{basehead}", {
-              owner,
-              repo,
-              basehead: `${baseSha}...${head}`,
-            })
-          ).data.files
+    const baseSha = range.kind === "compare" ? range.base : range.kind === "root" ? range.root : null
 
-    const files = (changed ?? []) as ChangedFile[]
+    const commitFiles = async (ref: string) =>
+      ((await octokit.request("GET /repos/{owner}/{repo}/commits/{ref}", { owner, repo, ref }))
+        .data.files ?? []) as ChangedFile[]
+    const compareFiles = async (base: string, to: string) =>
+      ((
+        await octokit.request("GET /repos/{owner}/{repo}/compare/{basehead}", {
+          owner,
+          repo,
+          basehead: `${base}...${to}`,
+        })
+      ).data.files ?? []) as ChangedFile[]
+
+    let files: ChangedFile[]
+    if (range.kind === "single") {
+      files = await commitFiles(range.ref)
+    } else if (range.kind === "compare") {
+      files = await compareFiles(range.base, range.head)
+    } else {
+      const [root, after] = await Promise.all([
+        commitFiles(range.root),
+        compareFiles(range.root, range.head),
+      ])
+      files = [...root, ...after]
+    }
+
     const { addedLines, truncated } = collectAddedLines(files)
     return {
       ...base,
@@ -509,35 +582,15 @@ export async function fetchRepoSnapshot(
 }
 
 export type ErasedHistory = {
-  /** Commits reachable from the old tip and from nothing else. */
   commits: { sha: string; message: string; author: string | null }[]
   files: { path: string; changeType: ChangeType }[]
-  /** Added lines on the orphaned side. Still has to be differenced against the survivors. */
   addedLines: string[]
   mergeBase: string
   truncated: boolean
 }
 
-/**
- * What a force push took out of a branch, read from the orphaned side of the
- * rewrite.
- *
- * The basehead is `after...before`, and the order is the entire trick. With the
- * NEW tip as base and the ORPHANED tip as head, GitHub answers with the commits
- * reachable from the old head and not the new one, plus a diff taken from their
- * common ancestor. That is the side of a force push that no snapshot of the
- * repository can reach: `git clone` gets the survivors, and so does every
- * scanner that reads a checkout. Reversing these two arguments silently returns
- * the surviving side instead, which looks plausible and detects nothing.
- *
- * Returns null when nothing was actually orphaned. `forced` is set by GitHub on
- * plenty of pushes that only fast-forward, and a rewrite that dropped no commit
- * has no erased side to inspect.
- *
- * Time-sensitive by nature. `before` is unreachable the moment the push lands,
- * and GitHub garbage-collects unreachable objects. This has to run on the
- * webhook, not from a cron picking the work up later.
- */
+// What a force push took out of a branch, read from the orphaned side of the
+// rewrite.
 export async function fetchErasedHistory(
   installationId: number,
   repoFullName: string,
@@ -550,8 +603,6 @@ export async function fetchErasedHistory(
       { ...splitRepo(repoFullName), basehead: `${after}...${before}` },
     )
     const data = response.data
-    // Nothing reachable only from the old tip: the branch moved forward, it was
-    // not rewritten. No erasure to report.
     if (data.commits.length === 0) return null
 
     const files = (data.files ?? []) as ChangedFile[]
@@ -572,61 +623,8 @@ export async function fetchErasedHistory(
 
 // The authorization boundary for every scan.
 //
-// These two are deliberately called with the *user's* token, never an
-// installation token. An installation token sees every repository the app was
-// granted, which is a superset of what any one member may read, using it to
-// decide what someone can scan is how a junior in a 500-person org ends up
-// reading the payroll repo's diffs. GitHub already computes the intersection;
-// asking it is both simpler and correct.
 
 export type UserInstallation = { id: number; account: string; accountType: "User" | "Organization" }
-
-/** Installations of this app that the signed-in user can actually see. */
-export async function listUserInstallations(userToken: string): Promise<UserInstallation[]> {
-  return github("list user installations", async () => {
-    const response = await new Octokit({ auth: userToken }).request("GET /user/installations", {
-      per_page: 100,
-    })
-    return response.data.installations.map((installation) => ({
-      id: installation.id,
-      account:
-        (installation.account && "login" in installation.account
-          ? installation.account.login
-          : installation.account?.slug) ?? "",
-      accountType:
-        installation.account && "type" in installation.account && installation.account.type === "Organization"
-          ? ("Organization" as const)
-          : ("User" as const),
-    }))
-  })
-}
-
-/**
- * Repositories in one installation that this user has explicit read access to.
- * GitHub's own words: repositories "the authenticated user has explicit
- * permission (:read, :write, or :admin) to access". This list is the ACL. A
- * repository absent from it may not be scanned, whatever the request asked for.
- */
-export async function listUserInstallationRepos(
-  userToken: string,
-  installationId: number,
-  limit: number,
-): Promise<string[]> {
-  return github("list user installation repositories", async () => {
-    const octokit = new Octokit({ auth: userToken })
-    const repos: string[] = []
-    for (let page = 1; repos.length < limit; page++) {
-      const response = await octokit.request("GET /user/installations/{installation_id}/repositories", {
-        installation_id: installationId,
-        per_page: 100,
-        page,
-      })
-      repos.push(...response.data.repositories.filter((r) => !r.archived).map((r) => r.full_name))
-      if (response.data.repositories.length < 100) break
-    }
-    return repos.slice(0, limit)
-  })
-}
 
 // Capped at one page: a user in more than 100 orgs is not a case this dashboard
 // needs to serve, and paging here would run on every sign-in.

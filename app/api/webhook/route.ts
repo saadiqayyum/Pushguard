@@ -9,21 +9,11 @@ import {
   syncTeamRepo,
 } from "@/lib/access"
 import { processMatches } from "@/lib/alerts"
-import {
-  activeInstallation,
-  installationsCollection,
-  forgetAlert,
-  noteAlertActivity,
-  noteRepo,
-  removeAlertComment,
-  upsertAlertComment,
-  recordAlert,
-  purgeOrgProjections,
-  purgeRepoProjections,
-  recordPushActor,
-  reposCollection,
-} from "@/lib/db"
+import { db, activeInstallation, forgetAlert, noteAlertActivity, noteRepo, removeAlertComment, upsertAlertComment, recordAlert, purgeOrgProjections, purgeRepoProjections, recordPushActor } from "@/lib/db"
 import { evaluateRules, needsReviewCheck, type PushContext } from "@/lib/engine"
+import { runAiRules } from "@/lib/ai-rules"
+import { drainReviewSessions, queueRepositoryRules } from "@/lib/review-session"
+import { drainIndexJobs, enqueueIndex, forgetIndex } from "@/lib/code-index"
 import { inspectForcePush } from "@/lib/forensics"
 import { env } from "@/lib/env"
 import { AppError } from "@/lib/errors"
@@ -87,7 +77,7 @@ async function handleInstallation(raw: string): Promise<Response> {
 
   if (payload.action === "created" || payload.action === "unsuspend") {
     const repos = payload.repositories?.map((r) => r.full_name)
-    await (await installationsCollection()).updateOne(
+    await db.installations().updateOne(
       { org },
       {
         $set: {
@@ -95,12 +85,10 @@ async function handleInstallation(raw: string): Promise<Response> {
           active: true,
           accountType: accountType(payload.installation.account.type),
           updatedAt: now,
-          // Absent only when GitHub omits the list; the tenant backfill covers that.
           ...(repos ? { repos } : {}),
         },
         $setOnInsert: {
           _id: crypto.randomUUID(),
-          // Default to whoever installed the app: an alert nobody is told about
           alertMention: `@${payload.sender.login}`,
           installedBy: payload.sender.login,
           createdAt: now,
@@ -113,23 +101,25 @@ async function handleInstallation(raw: string): Promise<Response> {
       installationId: payload.installation.id,
       repos: repos?.length ?? 0,
     })
-    // Access for every repository the installation covers, read once, in the
-    // background: from here on it is maintained by the member, membership, team
-    // and organization events.
     if (repos?.length) {
       after(() => syncManyRepos(payload.installation.id, repos))
+      after(async () => {
+        for (const repo of repos) {
+          await enqueueIndex({
+            repo,
+            installationId: payload.installation.id,
+            ref: "HEAD",
+            reason: "install",
+          })
+        }
+      })
     }
 
-    // Nothing to seed. The catalog *is* the rule set, so detection is live on
-    // the first push with no write at all; the database only ever holds what
-    // this account later changed.
   } else if (payload.action === "deleted" || payload.action === "suspend") {
-    await (await installationsCollection()).updateOne({ org }, { $set: { active: false, updatedAt: now } })
-    // Nothing will maintain these projections any more, and a stale access
-    // record is worse than none: it would answer "yes" long after the answer
-    // became unknowable. Scans, rules and filed alerts are the account's own
-    // history and are deliberately kept.
+    const covered = (await activeInstallation(org))?.repos ?? []
+    await db.installations().updateOne({ org }, { $set: { active: false, updatedAt: now } })
     await purgeOrgProjections(org)
+    await forgetIndex(covered)
     logger.info("installation_deactivated", { org, purged: true })
   }
   return new NextResponse(null, { status: 204 })
@@ -140,31 +130,35 @@ async function handleInstallationRepos(raw: string): Promise<Response> {
   const org = payload.installation.account.login
   const added = payload.repositories_added.map((r) => r.full_name)
   const removed = payload.repositories_removed.map((r) => r.full_name)
-  const collection = await installationsCollection()
+  const collection = db.installations()
 
-  // $addToSet and $pull cannot touch the same field in one update.
   if (added.length > 0) {
     await collection.updateOne({ org }, { $addToSet: { repos: { $each: added } }, $set: { updatedAt: new Date() } })
   }
   if (removed.length > 0) {
     await collection.updateOne({ org }, { $pull: { repos: { $in: removed } }, $set: { updatedAt: new Date() } })
-    // The app can no longer see these, so anything we recorded about them is
-    // now an assertion we cannot check.
     await purgeRepoProjections(removed)
+    await forgetIndex(removed)
   }
-  // New repositories arrive with nobody recorded against them, so their access
-  // is read once here rather than on the first request that needs it.
   const installation = await activeInstallation(org)
   if (installation && added.length > 0) {
     after(() => syncManyRepos(installation.installationId, added))
+    after(async () => {
+      for (const repo of added) {
+        await enqueueIndex({
+          repo,
+          installationId: installation.installationId,
+          ref: "HEAD",
+          reason: "install",
+        })
+      }
+    })
   }
   logger.info("installation_repos_updated", { org, added: added.length, removed: removed.length })
   return new NextResponse(null, { status: 204 })
 }
 
 async function handleTeam(raw: string): Promise<Response> {
-  // A team gaining or losing a repository changes what every member of it can
-  // read, so it is handled before the slug bookkeeping below.
   const repoChange = teamRepoPayloadSchema.safeParse(JSON.parse(raw))
   if (
     repoChange.success &&
@@ -189,13 +183,11 @@ async function handleTeam(raw: string): Promise<Response> {
   const payload = teamPayloadSchema.parse(JSON.parse(raw))
   const org = payload.organization.login
   const slug = `${org}/${payload.team.slug}`
-  const collection = await installationsCollection()
+  const collection = db.installations()
 
   if (payload.action === "deleted") {
     await collection.updateOne({ org }, { $pull: { teams: slug } })
   } else {
-    // created / edited. A rename arrives as `edited` with the old slug in
-    // `changes`, so drop that one before adding the current name.
     const previous = payload.changes?.slug?.from
     if (previous) await collection.updateOne({ org }, { $pull: { teams: `${org}/${previous}` } })
     await collection.updateOne({ org }, { $addToSet: { teams: slug } })
@@ -204,20 +196,7 @@ async function handleTeam(raw: string): Promise<Response> {
   return new NextResponse(null, { status: 204 })
 }
 
-/**
- * A repository went from private to public.
- *
- * The only event this app treats as an incident on its own, with no rule
- * involved. Every other detection is a heuristic that a rule can tune or
- * disable; this one is not a judgement call. The code was private, someone
- * made it public, and everyone can read it now. GitHub sends no inverse event,
- * so there is nothing to wait for and nothing to correlate.
- *
- * Filed into the repository itself when no alerts repo is configured. That is
- * normally refused for public repositories because an alert body quotes the
- * offending lines, here there are none to quote, only the fact and the account
- * that caused it.
- */
+// A repository went from private to public.
 async function handlePublic(raw: string): Promise<Response> {
   const payload = publicPayloadSchema.parse(JSON.parse(raw))
   const repo = payload.repository.full_name
@@ -274,46 +253,28 @@ async function handlePublic(raw: string): Promise<Response> {
   return new NextResponse(null, { status: 204 })
 }
 
-/**
- * Issue activity on an alert we filed.
- *
- * Two jobs. It mirrors open/closed so the feed can be served without asking
- * GitHub, and it records the first time a human touched the issue. Which is
- * what separates "three criticals" from "three criticals nobody has opened".
- *
- * Our own app's writes are excluded: filing an alert must not mark it as read.
- */
+// Issue activity on an alert we filed.
 async function handleIssue(raw: string, event: "issues" | "issue_comment"): Promise<Response> {
   const payload = issuePayloadSchema.parse(JSON.parse(raw))
   const repo = payload.repository.full_name
   const { number } = payload.issue
   const { action } = payload
 
-  // Deleting or transferring leaves the row pointing at nothing, and an
-  // `unlabeled` that removed our own label means it is no longer ours to track.
-  // These are checked before the label filter, because by the time they arrive
-  // the label may already be gone.
   if (event === "issues" && (action === "deleted" || action === "transferred")) {
     await forgetAlert(repo, number)
     logger.info("alert_forgotten", { repo, issue: number, action })
     return new NextResponse(null, { status: 204 })
   }
 
-  // Only our own alerts carry this label, so everything else in the repository
-  // is somebody else's issue traffic and none of our business.
   if (!payload.issue.labels.some((label) => label.name === "pushguard")) {
     if (event === "issues" && action === "unlabeled") await forgetAlert(repo, number)
     return new NextResponse(null, { status: 204 })
   }
 
-  // A Bot sender is this app closing or annotating its own ticket.
   const human = payload.sender.type === "Bot" ? null : payload.sender.login
 
-  // `opened` is us filing it, which is not somebody having looked at it.
-  // Everything else a person does to the issue counts as having looked.
   const touched = event === "issues" && action === "opened" ? null : human
 
-  // Mirror the conversation itself, not just the fact of it.
   if (event === "issue_comment" && payload.comment) {
     const { comment } = payload
     if (action === "deleted") {
@@ -333,8 +294,6 @@ async function handleIssue(raw: string, event: "issues" | "issue_comment"): Prom
     state:
       action === "closed" ? "closed" : action === "reopened" ? "open" : undefined,
     by: touched,
-    // Assignment is the useful triage state: an alert with nobody on it is the
-    // one worth surfacing, whether or not somebody once glanced at it.
     ...(action === "assigned" || action === "unassigned"
       ? { assignees: payload.issue.assignees.map((user) => user.login) }
       : {}),
@@ -345,12 +304,7 @@ async function handleIssue(raw: string, event: "issues" | "issue_comment"): Prom
   return new NextResponse(null, { status: 204 })
 }
 
-/**
- * Access-changing events.
- *
- * Each one re-reads the smallest slice it can and answers 204 immediately, * the GitHub calls happen in `after()`, because a webhook that blocks on them
- * gets retried and duplicated rather than thanked.
- */
+// Access-changing events.
 async function handleMember(raw: string): Promise<Response> {
   const payload = memberPayloadSchema.parse(JSON.parse(raw))
   const org = payload.repository.owner.login
@@ -386,27 +340,21 @@ async function handleOrganization(raw: string): Promise<Response> {
   const org = payload.organization.login
   const login = payload.membership?.user.login
 
-  // Leaving is the one access change needing no GitHub call: every grant in
-  // that org goes, whatever produced it.
   if ((payload.action === "member_removed" || payload.action === "member_invited") && login) {
     if (payload.action === "member_removed") await revokeOrgAccess(org, login)
     logger.info("org_membership_changed", { org, login, action: payload.action })
     return new NextResponse(null, { status: 204 })
   }
 
-  // Joining grants nothing on its own, access arrives with a team or a repo
-  // event. So there is nothing to write, only to record.
   if (payload.action === "member_added" && login) {
     logger.info("org_member_added", { org, login })
     return new NextResponse(null, { status: 204 })
   }
 
-  // The org is gone or is now called something else. Every projection is keyed
-  // by the old name and can no longer be maintained under it.
   if (payload.action === "deleted" || payload.action === "renamed") {
     const previous = payload.changes?.login?.from ?? org
     await purgeOrgProjections(previous)
-    await (await installationsCollection()).updateOne(
+    await db.installations().updateOne(
       { org: previous },
       { $set: { active: payload.action === "renamed", updatedAt: new Date() } },
     )
@@ -432,21 +380,18 @@ async function handleRef(raw: string, event: "create" | "delete"): Promise<Respo
 async function handleRepository(raw: string): Promise<Response> {
   const payload = repositoryPayloadSchema.parse(JSON.parse(raw))
   const fullName = payload.repository.full_name
-  const repos = await reposCollection()
 
   if (payload.action === "deleted") {
     await purgeRepoProjections([fullName])
+    await forgetIndex([fullName])
     logger.info("repo_deleted", { repo: fullName })
     return new NextResponse(null, { status: 204 })
   }
 
-  // With `repository_selection: all` GitHub does not send an
-  // installation_repositories event for a newly created repository, so this is
-  // the only notice we get that it is now in scope.
   if (payload.action === "created" || payload.action === "unarchived") {
     const installation = await activeInstallation(payload.repository.owner.login)
     if (installation) {
-      await repos.updateOne(
+      await db.repos().updateOne(
         { _id: fullName },
         {
           $set: {
@@ -459,25 +404,31 @@ async function handleRepository(raw: string): Promise<Response> {
         },
         { upsert: true },
       )
-      await (await installationsCollection()).updateOne(
+      await db.installations().updateOne(
         { org: payload.repository.owner.login },
         { $addToSet: { repos: fullName }, $set: { updatedAt: new Date() } },
       )
       after(() => syncManyRepos(installation.installationId, [fullName]))
+      after(() =>
+        enqueueIndex({
+          repo: fullName,
+          installationId: installation.installationId,
+          ref: "HEAD",
+          reason: "install",
+        }),
+      )
     }
     logger.info("repo_created", { repo: fullName })
     return new NextResponse(null, { status: 204 })
   }
 
-  // A rename leaves the old record orphaned under a name GitHub will never
-  // mention again, so move it rather than writing a second one.
   const previousName = payload.changes?.repository?.name?.from
   if (payload.action === "renamed" && previousName) {
     const oldId = `${payload.repository.owner.login}/${previousName}`
-    const existing = await repos.findOne({ _id: oldId })
+    const existing = await db.repos().findOne({ _id: oldId })
     if (existing) {
-      await repos.deleteOne({ _id: oldId })
-      await repos.insertOne({ ...existing, _id: fullName, updatedAt: new Date() })
+      await db.repos().deleteOne({ _id: oldId })
+      await db.repos().insertOne({ ...existing, _id: fullName, updatedAt: new Date() })
       logger.info("repo_renamed", { from: oldId, to: fullName })
       return new NextResponse(null, { status: 204 })
     }
@@ -502,36 +453,25 @@ async function handlePush(raw: string, deliveryId: string | null): Promise<Respo
     return new NextResponse(null, { status: 204 })
   }
 
-  // Self-heal: a push proves the app is on this repo, so no installation_repositories
-  // event can be missed badly enough to leave the picker stale.
   if (installation.repos && !installation.repos.includes(payload.repository.full_name)) {
-    await (await installationsCollection()).updateOne(
+    await db.installations().updateOne(
       { org },
       { $addToSet: { repos: payload.repository.full_name } },
     )
   }
 
-  // Recorded before the rules run, and only on real pushes: a branch deletion
-  // carries no commits and should not make someone's next real push look
-  // routine.
   const senderFirstPush = payload.deleted
     ? false
     : await recordPushActor(payload.repository.full_name, payload.sender.login)
 
-  // Every push carries the repository's current default branch and the ref it
-  // touched, so the stored record self-heals even if a create/delete event was
-  // missed or predates the subscription.
   const branch = payload.ref.replace("refs/heads/", "")
   await noteRepo(payload.repository.full_name, {
     defaultBranch: payload.repository.default_branch,
     ...(payload.deleted ? { removeBranch: branch } : { addBranch: branch }),
   })
 
-  // One rule set per account covers every org it installed on.
   const rules = await getActiveRules(installation.installedBy)
 
-  // The one GitHub call on the fast path, and it is opt-in: nothing asks unless
-  // a rule scoped to this repo and branch tests `unreviewed`.
   const unreviewed =
     !payload.deleted && needsReviewCheck(rules, payload.repository.full_name, branch)
       ? await reviewState(installation.installationId, payload.repository.full_name, payload.after)
@@ -539,6 +479,48 @@ async function handlePush(raw: string, deliveryId: string | null): Promise<Respo
 
   const context = toContext(payload, senderFirstPush, unreviewed)
   const matches = evaluateRules(rules, context)
+
+  if (!payload.deleted && branch === payload.repository.default_branch) {
+    const touched = [
+      ...new Set(context.files.filter((f) => f.changeType !== "removed").map((f) => f.path)),
+    ]
+    const gone = context.files.filter((f) => f.changeType === "removed").map((f) => f.path)
+    if (touched.length > 0 || gone.length > 0) {
+      const repoName = payload.repository.full_name
+      after(async () => {
+        try {
+          await enqueueIndex({
+            repo: repoName,
+            installationId: installation.installationId,
+            ref: payload.after,
+            reason: "push",
+            paths: touched,
+            removed: gone,
+          })
+          await drainIndexJobs(1, repoName)
+        } catch (error) {
+          logger.warn("index_update_failed", { repo: repoName, error: String(error) })
+        }
+      })
+
+      after(async () => {
+        try {
+          await queueRepositoryRules(
+            installation,
+            context.repo,
+            context.branch,
+            payload.after,
+            context.files,
+            payload.before === EMPTY_SHA ? undefined : payload.before,
+            context,
+          )
+          await drainReviewSessions(1, repoName)
+        } catch (error) {
+          logger.warn("review_session_enqueue_failed", { repo: repoName, error: String(error) })
+        }
+      })
+    }
+  }
 
   logger.info("push_evaluated", {
     deliveryId,
@@ -549,11 +531,30 @@ async function handlePush(raw: string, deliveryId: string | null): Promise<Respo
     matches: matches.map((m) => m.rule.id),
   })
 
-  // A force push is inspected even when nothing visible matched. An attacker who
-  // rewrites history to bury a commit leaves a surviving side that is clean by
-  // construction, so returning here on `matches.length === 0` would drop the one
-  // case this whole path exists for.
   const inspectErasure = payload.forced && payload.before !== EMPTY_SHA && !payload.deleted
+  if (matches.length === 0 && !inspectErasure && !payload.deleted) {
+    after(async () => {
+      try {
+        const aiFindings = await runAiRules(
+          installation,
+          context.repo,
+          context.branch,
+          payload.after,
+          context.files,
+        )
+        if (aiFindings.length > 0) {
+          await processMatches(installation, payload, [], null, aiFindings)
+        }
+      } catch (error) {
+        logger.error("ai_rules_failed", {
+          deliveryId,
+          repo: context.repo,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    })
+    return new NextResponse(null, { status: 202 })
+  }
   if (matches.length === 0 && !inspectErasure) return new NextResponse(null, { status: 204 })
 
   after(async () => {
@@ -568,8 +569,18 @@ async function handlePush(raw: string, deliveryId: string | null): Promise<Respo
             context.branch,
           )
         : null
-      if (matches.length === 0 && !forensics) return
-      await processMatches(installation, payload, matches, forensics)
+      const aiFindings = payload.deleted
+        ? []
+        : await runAiRules(
+            installation,
+            context.repo,
+            context.branch,
+            payload.after,
+            context.files,
+            context,
+          )
+      if (matches.length === 0 && !forensics && aiFindings.length === 0) return
+      await processMatches(installation, payload, matches, forensics, aiFindings)
     } catch (error) {
       logger.error("alert_processing_failed", {
         deliveryId,
@@ -582,7 +593,7 @@ async function handlePush(raw: string, deliveryId: string | null): Promise<Respo
   return new NextResponse(null, { status: 202 })
 }
 
-/** Null, not false, when GitHub could not answer. See commitReachedViaPullRequest. */
+// Null, not false, when GitHub could not answer. See commitReachedViaPullRequest.
 async function reviewState(
   installationId: number,
   repo: string,
@@ -618,18 +629,7 @@ function toContext(
   }
 }
 
-/**
- * A commit here names a GitHub account that is not the one that pushed.
- *
- * Only `author.username` is compared, which is GitHub's own resolution of the
- * commit's author email to an account. A commit whose email matches no account
- * has no username and is skipped: unresolvable is not the same as forged.
- *
- * Routine on its own. Merging someone else's pull request pushes their commits
- * under your credential, and that is most of the mismatches in any repository.
- * It earns its severity paired with `unreviewed`, where nobody reviewed the code
- * *and* the commit claims to be somebody else's.
- */
+// A commit here names a GitHub account that is not the one that pushed.
 function hasAuthorMismatch(payload: PushPayload): boolean {
   return payload.commits.some(
     (commit) => commit.author?.username && commit.author.username !== payload.sender.login,

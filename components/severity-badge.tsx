@@ -2,11 +2,7 @@ import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
 import type { Severity } from "@/schemas/rule"
 
-/**
- * Severity, everywhere, in one ranking: solid for critical, tinted for high,
- * neutral below. shadcn's own variants ranked it backwards, so the classes are
- * named here rather than reaching for `variant`.
- */
+// Severity, everywhere, in one ranking: solid for critical, tinted for high,.
 const TONE: Record<Severity, string> = {
   critical: "bg-destructive text-white",
   high: "bg-destructive/10 text-destructive",

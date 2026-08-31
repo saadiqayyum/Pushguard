@@ -28,8 +28,6 @@ export default async function AlertsPage({
   if (!tenant.current) return null;
   const { org } = tenant.current;
 
-  // Mongo only. Scoped to repositories this account can read, from the same
-  // projection that authorises scanning.
   const login = session.login || session.user.name || "";
   const page = await listAlerts(
     login,

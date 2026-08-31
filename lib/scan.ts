@@ -1,19 +1,6 @@
 import { resolveAlertTarget } from "@/lib/alert-target"
 import { auth, githubToken } from "@/lib/auth"
-import {
-  accessibleRepos,
-  activeInstallation,
-  canReadRepo,
-  installationById,
-  installationsCollection,
-  noteRepo,
-  repoRecord,
-  scansCollection,
-  type InstallationDoc,
-  type ScanDoc,
-  type ScanFinding,
-  type ScanRepo,
-} from "@/lib/db"
+import { db, MAX_SCAN_FINDINGS, STUCK_AFTER_MS, accessibleRepos, activeInstallation, canReadRepo, installationById, noteRepo, repoRecord, type InstallationDoc, type ScanDoc, type ScanFinding, type ScanRepo } from "@/lib/db"
 import { catalogRules } from "@/lib/rules/catalog"
 import { confirmContentMatches, evaluateRules, scannableRules, type PushContext } from "@/lib/engine"
 import {
@@ -30,24 +17,17 @@ import { fileOrThreadAlert } from "@/lib/alerts"
 import { SCAN_COMMIT_WINDOW } from "@/lib/paging"
 import { logger } from "@/lib/logger"
 import { getActiveRules } from "@/lib/rules"
+import { getActiveAiRules, runAiRules } from "@/lib/ai-rules"
+import { drainReviewSessions, enqueueReviewSession } from "@/lib/review-session"
 import type { Rule } from "@/schemas/rule"
 
 export const SCAN_LIMITS = { perDay: 25, repos: 20 } as const
 
 // A running scan that has not reported back by now is assumed dead. The
 // serverless invocation that owned it was cut off, and goes back in the queue.
-const STUCK_AFTER_MS = 5 * 60 * 1000
 
-const MAX_FINDINGS = 500
 
-/**
- * Who is asking, and the token that decides what they may read.
- *
- * There is no anonymous variant. A scan reads source and reports the lines it
- * matched, so every one of them is authorised against the caller's own GitHub
- * access, never against an installation token, which sees more than any single
- * member is entitled to.
- */
+// Who is asking, and the token that decides what they may read.
 export type Requester = { login: string; token: string }
 
 export async function resolveRequester(): Promise<Requester> {
@@ -58,13 +38,7 @@ export async function resolveRequester(): Promise<Requester> {
   return { login: session.login || session.user.name || "", token }
 }
 
-/**
- * What the picker may offer, read entirely from the projection.
- *
- * No GitHub call: `repo_access` already says which repositories this account can
- * read, maintained by the member, membership, team and organization webhooks.
- * The list is grouped back into installations so the picker keeps its shape.
- */
+// What the picker may offer, read entirely from the projection.
 export async function scanTargets(
   requester: Requester,
 ): Promise<{ installation: UserInstallation; repos: string[] }[]> {
@@ -72,12 +46,12 @@ export async function scanTargets(
   if (repos.length === 0) return []
 
   const orgs = [...new Set(repos.map((repo) => ownerOf(repo)))]
-  const installations = await (await installationsCollection())
+  const active = await db.installations()
     .find({ org: { $in: orgs }, active: true })
     .sort({ org: 1 })
     .toArray()
 
-  return installations.map((installation) => ({
+  return active.map((installation) => ({
     installation: {
       id: installation.installationId,
       account: installation.org,
@@ -87,21 +61,8 @@ export async function scanTargets(
   }))
 }
 
-/**
- * Branches of one repository, refused unless GitHub lists that repository for
- * this user.
- *
- * The database is the source of truth. GitHub is read exactly once per
- * repository. The first time anyone asks and no record exists, and after that
- * the record is maintained by the `create`, `delete`, `repository` and `push`
- * webhooks. There is no expiry and no revalidation: a stored list is not a copy
- * that might have gone stale, it is the current state as GitHub last reported
- * it.
- *
- * The access check above is deliberately NOT stored. Which repositories a user
- * may read is asked of GitHub on every call, because that answer changes
- * without any webhook telling us.
- */
+// Branches of one repository, refused unless GitHub lists that repository for
+// this user.
 export async function branchesFor(
   requester: Requester,
   installationId: number,
@@ -112,9 +73,6 @@ export async function branchesFor(
   }
 
   const stored = await repoRecord(repo)
-  // Never synced means the install backfill has not reached it yet. Offering
-  // the default alone is honest and costs nothing; the create/delete webhooks
-  // fill the rest in as branches move.
   if (!stored) return { branches: [], defaultBranch: "" }
   return { branches: stored.branches, defaultBranch: stored.defaultBranch }
 }
@@ -126,39 +84,29 @@ async function rulesForScan(installation: InstallationDoc | null): Promise<Rule[
 
 async function usedToday(owner: string): Promise<number> {
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000)
-  return (await scansCollection()).countDocuments({ owner, createdAt: { $gte: since } })
+  return db.scans().countDocuments({ owner, createdAt: { $gte: since } })
 }
 
-/** A scan is private to the account that ran it. There is no shareable variant. */
+// A scan is private to the account that ran it. There is no shareable variant.
 export function canReadScan(scan: ScanDoc, owner: string | null): boolean {
   return owner !== null && scan.owner === owner
 }
 
-export type ScanRequest = { installationId: number; repo?: string; branch?: string }
+export type ScanRequest = { installationId: number; repo?: string; branch?: string; aiKey?: string }
 
-/**
- * Everything that can fail cheaply fails here: the quota, the concurrency rule,
- * and, the one that matters, whether this user may read what they asked for.
- *
- * The picker is a convenience, not a control: this request body arrived over
- * the wire and can name any installation or repository at all. So the accessible
- * list is fetched again here, with the user's own token, and the request is
- * checked against it. That check is the authorization boundary.
- */
+// Everything that can fail cheaply fails here: the quota, the concurrency rule,
+// and, the one that matters, whether this user may read what they asked for.
 export async function enqueueScan(requester: Requester, request: ScanRequest): Promise<ScanDoc> {
   if ((await usedToday(requester.login)) >= SCAN_LIMITS.perDay) {
     throw new AppError("rate_limited", `Scans are limited to ${SCAN_LIMITS.perDay} a day.`)
   }
 
-  const installation = await (await installationsCollection()).findOne({
+  const installation = await db.installations().findOne({
     installationId: request.installationId,
     active: true,
   })
-  // Same answer for an installation that does not exist and one that is not
-  // theirs: the id is not a hint worth confirming.
   if (!installation) throw new AppError("not_found", "No such installation")
 
-  // The authorization check, served from the projection rather than GitHub.
   const accessible = await accessibleRepos(requester.login, installation.installationId)
   if (accessible.length === 0) {
     throw new AppError(
@@ -176,10 +124,9 @@ export async function enqueueScan(requester: Requester, request: ScanRequest): P
     _id: crypto.randomUUID(),
     owner: requester.login,
     target: request.repo ?? installation.org,
-    // Only ever set alongside a single repository; a whole-account scan reads
-    // each repository's own default branch.
     ...(request.branch && request.repo ? { branch: request.branch } : {}),
     scope: request.repo ? "repo" : "org",
+    ...(request.aiKey ? { aiKey: request.aiKey } : {}),
     status: "queued",
     active: true,
     installationId: installation.installationId,
@@ -193,7 +140,7 @@ export async function enqueueScan(requester: Requester, request: ScanRequest): P
   }
 
   try {
-    await (await scansCollection()).insertOne(doc)
+    await db.scans().insertOne(doc)
   } catch (error) {
     if ((error as { code?: number }).code === 11000) {
       throw new AppError("rate_limited", "A scan is already running. Wait for it to finish.")
@@ -206,10 +153,7 @@ export async function enqueueScan(requester: Requester, request: ScanRequest): P
 }
 
 export async function runScan(id: string): Promise<void> {
-  const scans = await scansCollection()
-  // Claim before working: the enqueue path and the cron can both reach for the
-  // same scan, and only one of them may run it.
-  const scan = await scans.findOneAndUpdate(
+  const scan = await db.scans().findOneAndUpdate(
     { _id: id, status: "queued" },
     { $set: { status: "running", startedAt: new Date() } },
     { returnDocument: "after" },
@@ -218,7 +162,7 @@ export async function runScan(id: string): Promise<void> {
 
   try {
     const { findings, scanned } = await collectFindings(scan)
-    await scans.updateOne(
+    await db.scans().updateOne(
       { _id: id },
       { $set: { status: "done", findings, scanned, finishedAt: new Date() }, $unset: { active: "" } },
     )
@@ -228,10 +172,16 @@ export async function runScan(id: string): Promise<void> {
       repos: scanned.length,
       findings: findings.length,
     })
+
+    // Whatever repository-scope rules this scan queued, run now rather than
+    // waiting for the cron: it fires once a day on this plan. Started only
+    // after the scan is saved, so a session that runs out of time cannot cost
+    // the scan its results; it stays queued and resumes.
+    if (scan.aiKey) await drainReviewSessions(1)
   } catch (error) {
     const message = error instanceof AppError ? error.message : "Scan failed"
     const errorCode: ErrorCode = error instanceof AppError ? error.code : "internal"
-    await scans.updateOne(
+    await db.scans().updateOne(
       { _id: id },
       {
         $set: { status: "failed", error: message, errorCode, finishedAt: new Date() },
@@ -246,32 +196,25 @@ export async function runScan(id: string): Promise<void> {
   }
 }
 
-// Reading happens with the installation token, which is the only credential that
-// can fetch a diff. That is safe because `repos` was already narrowed to what the
-// requester could read. The check lives at enqueue, not here.
+// Reading happens with the installation token, which is the only credential that.
 async function collectFindings(
   scan: ScanDoc,
 ): Promise<{ findings: ScanFinding[]; scanned: ScanRepo[] }> {
   const installation = await installationById(scan.installationId)
   const rules = await rulesForScan(installation)
   const hourUtc = new Date().getUTCHours()
-  // Why each repo could not be read, so a total failure can be explained rather
-  // than blamed on GitHub. Pushed from parallel tasks; order does not matter.
   const failures: ErrorCode[] = []
   const scanned: ScanRepo[] = []
 
   const results = await Promise.all(
     scan.repos.map(async (repo) => {
       try {
-        // A stored default branch removes one of the three GitHub calls this
-        // repository would otherwise cost. Absent, fetchRepoSnapshot asks.
         const known = scan.branch ? undefined : (await repoRecord(repo))?.defaultBranch
         const snapshot = await fetchRepoSnapshot(repo, scan.installationId, scan.branch ?? known)
         const context: PushContext = {
           repo: snapshot.repo,
           branch: snapshot.branch,
           forced: false,
-          // A scan reads committed code and knows nothing about who pushed it.
           senderFirstPush: false,
           branchCreated: false,
           branchDeleted: false,
@@ -281,7 +224,6 @@ async function collectFindings(
           files: snapshot.files,
           commitMessages: [],
         }
-        // Free correction: the snapshot just told us the real default.
         if (!scan.branch) await noteRepo(snapshot.repo, { defaultBranch: snapshot.branch })
 
         scanned.push({
@@ -294,9 +236,28 @@ async function collectFindings(
         })
 
         const confirmed = confirmContentMatches(evaluateRules(rules, context), snapshot.addedLines)
-        return confirmed.map((match) =>
+        const findings = confirmed.map((match) =>
           toFinding(match.rule, snapshot.repo, match.matchedFiles, match.matchedLines),
         )
+
+        // `changed`-scope AI rules read a file set, and a scan has one: the
+        // files the window touched. No push context is passed, so a rule gated
+        // on the push event is dropped rather than matched on an unknown.
+        // `repository` rules are queued below instead; they cannot finish here.
+        if (scan.aiKey && installation && snapshot.headSha) {
+          findings.push(
+            ...(await runAiRules(
+              installation,
+              snapshot.repo,
+              snapshot.branch,
+              snapshot.headSha,
+              snapshot.files,
+              undefined,
+              scan.aiKey,
+            )),
+          )
+        }
+        return findings
       } catch (error) {
         logger.warn("scan_repo_failed", {
           id: scan._id,
@@ -310,8 +271,6 @@ async function collectFindings(
   )
 
   if (results.every((result) => result === null)) {
-    // Every repo unreadable through an installation that was supposed to cover
-    // them means the app was removed from them between the picker and the run.
     const removed = failures.length > 0 && failures.every((code) => code === "not_found")
     if (removed && scan.branch) {
       throw new AppError("not_found", `No branch named ${scan.branch} in ${scan.target}.`)
@@ -323,21 +282,61 @@ async function collectFindings(
   const findings = results
     .flatMap((result) => result ?? [])
     .sort((a, b) => SEVERITY_ORDER.indexOf(b.severity) - SEVERITY_ORDER.indexOf(a.severity))
-    .slice(0, MAX_FINDINGS)
+    .slice(0, MAX_SCAN_FINDINGS)
+
+  // Repository-scope AI rules are queued rather than run here: they navigate the
+  // tree through tools and cannot finish inside this invocation. The scan
+  // reports its pattern findings now; the session files its own alert later.
+  if (scan.aiKey && installation) {
+    const repositoryRules = (await getActiveAiRules(installation.installedBy)).filter(
+      (rule) => rule.scope === "repository",
+    )
+    for (const read of scanned) {
+      if (repositoryRules.length === 0 || !read.headSha) break
+      // Seeded from what this scan already flagged, plus the files it read.
+      // An unseeded agent explores from nothing, and coverage becomes whatever
+      // it happens to choose; the pattern hits are the cheapest strong prior.
+      const seeds = [
+        ...new Set(
+          findings
+            .filter((finding) => finding.repo === read.repo)
+            .flatMap((finding) => finding.files),
+        ),
+      ]
+      await enqueueReviewSession({
+        owner: installation.installedBy,
+        installationId: scan.installationId,
+        repo: read.repo,
+        branch: read.branch,
+        sha: read.headSha,
+        source: "scan",
+        ...(read.baseSha ? { baseSha: read.baseSha } : {}),
+        rules: repositoryRules.map((rule) => ({
+          id: rule.id,
+          prompt: rule.prompt,
+          severity: rule.severity,
+          paths: rule.paths,
+          exclude_paths: rule.exclude_paths,
+          budget: rule.budget,
+          key: scan.aiKey,
+          done: false,
+        })),
+        seeds,
+      })
+    }
+  }
 
   return { findings, scanned: scanned.sort((a, b) => a.repo.localeCompare(b.repo)) }
 }
 
 // Backstop for scans whose invocation died before finishing, and for anything
 // the enqueue path failed to start. Safe to run concurrently with itself:
-// runScan claims each row first.
 export async function drainScans(limit = 5): Promise<number> {
-  const scans = await scansCollection()
-  await scans.updateMany(
+  await db.scans().updateMany(
     { status: "running", startedAt: { $lt: new Date(Date.now() - STUCK_AFTER_MS) } },
     { $set: { status: "queued" } },
   )
-  const queued = await scans.find({ status: "queued" }).sort({ createdAt: 1 }).limit(limit).toArray()
+  const queued = await db.scans().find({ status: "queued" }).sort({ createdAt: 1 }).limit(limit).toArray()
   await Promise.all(queued.map((scan) => runScan(scan._id)))
   return queued.length
 }
@@ -349,20 +348,8 @@ export type FilingResult = {
   failed: { repo: string; reason: string }[]
 }
 
-/**
- * File findings as GitHub issues. One issue per repository, and each repository
- * stands alone.
- *
- * Every write is isolated and persisted as it succeeds. The first version filed
- * them in a loop and saved the results at the end, so a repository with issues
- * disabled. A normal thing for a mirror or a docs repo, threw, the request
- * 502'd, and the issues already created on GitHub were orphaned: real tickets
- * that the app then insisted had never been filed. A partial success has to be
- * recorded as a partial success.
- *
- * `repos` narrows it to a subset. Repositories already filed are skipped rather
- * than duplicated, so re-filing after a failure only picks up what is missing.
- */
+// File findings as GitHub issues. One issue per repository, and each repository
+// stands alone.
 export async function fileScanFindings(
   scan: ScanDoc,
   filer: Requester,
@@ -371,8 +358,6 @@ export async function fileScanFindings(
   if (scan.status !== "done") throw new AppError("validation_failed", "Scan has not finished")
   if (scan.findings.length === 0) throw new AppError("validation_failed", "Nothing to file")
 
-  // Access is re-checked at write time rather than trusted from the scan: the
-  // findings may be days old, and someone's access can be revoked in between.
   const writable = new Set(await accessibleRepos(filer.login, scan.installationId))
   const alreadyFiled = new Set((scan.filed ?? []).map((entry) => entry.repo))
   const wanted = repos ? new Set(repos) : null
@@ -391,7 +376,6 @@ export async function fileScanFindings(
     )
   }
 
-  const scans = await scansCollection()
   const filed: ScanDoc["filed"] = []
   const failed: FilingResult["failed"] = []
 
@@ -404,16 +388,9 @@ export async function fileScanFindings(
       const ruleIds = findings.map((f) => f.ruleId)
       const read = scan.scanned?.find((s) => s.repo === repo)
 
-      // Same decision the push path makes, from the same function. This path
-      // used to skip it entirely and quote matched lines into whatever
-      // repository it was filing in, public ones included. Unknown visibility
-      // is treated as public: the safe default is to withhold, and a repository
-      // with no stored record has never been synced.
       const stored = await repoRecord(repo)
       const target = resolveAlertTarget(repo, stored?.private ?? false)
 
-      // The same decision as the push path, made by the same function: add to
-      // an open issue if one covers these rules, otherwise open one.
       const result = await fileOrThreadAlert({
         installationId: installation.installationId,
         target: target.repo,
@@ -424,14 +401,11 @@ export async function fileScanFindings(
         by: filer.login,
         title: `[${severity}] ${repo}: ${ruleIds.join(", ")}`,
         body: scanIssueBody(findings, filer.login, installation.alertMention, read, target.redactContent),
-        // A reference, not a re-report. The rules and lines are already above.
         repeat: `Still present in a scan by @${filer.login}${read ? ` of \`${read.branch}\` at \`${read.headSha.slice(0, 7)}\`` : ""}.`,
       })
 
       const entry = { repo, number: result.number, url: result.url }
-      // Saved immediately. An issue that exists on GitHub and not here is the
-      // failure mode this whole shape exists to prevent.
-      await scans.updateOne({ _id: scan._id }, { $addToSet: { filed: entry } })
+      await db.scans().updateOne({ _id: scan._id }, { $addToSet: { filed: entry } })
       filed.push(entry)
     } catch (error) {
       const reason =

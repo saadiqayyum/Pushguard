@@ -2,7 +2,7 @@ import Link from "next/link"
 import { notFound, redirect } from "next/navigation"
 import { ScanReport } from "@/components/scan-panel"
 import { auth } from "@/lib/auth"
-import { scansCollection, serializeScan } from "@/lib/db"
+import { db, serializeScan } from "@/lib/db"
 import { installUrl } from "@/lib/install-url"
 import { canReadScan } from "@/lib/scan"
 import { formatTimestamp } from "@/lib/format"
@@ -14,9 +14,7 @@ export default async function ScanDetailPage({ params }: { params: Promise<{ id:
   const session = await auth()
   if (!session?.user) redirect("/signin")
 
-  const scan = await (await scansCollection()).findOne({ _id: id })
-  // A scan quotes source from private repositories, so it is private to the
-  // account that ran it. Not found and not yours look identical from here.
+  const scan = await db.scans().findOne({ _id: id })
   if (!scan || !canReadScan(scan, session.login ?? null)) notFound()
 
   return (

@@ -1,13 +1,10 @@
-/**
- * JVM, .NET, Ruby and PHP. Different ecosystems, one shared weakness: the build
- * descriptor is a program, and it runs before anybody compiles or reviews.
- */
+// JVM, .NET, Ruby and PHP. Different ecosystems, one shared weakness: the build
+// descriptor is a program, and it runs before anybody compiles or reviews.
 export const jvm = [
   {
     id: "jvm-build-runs-command",
     description: "A Gradle or Maven build executing a command or fetching code",
     severity: "critical",
-    // A Gradle build file is Groovy or Kotlin. It is not configuration.
     paths: ["**/build.gradle", "**/build.gradle.kts", "**/settings.gradle*", "**/pom.xml", "**/*.jenkinsfile"],
     added_lines: "exec\\s*\\{|ProcessBuilder|Runtime\\.getRuntime|\\bexec-maven-plugin|<goal>exec</goal>",
   },
@@ -24,13 +21,11 @@ export const jvm = [
     severity: "high",
     paths: ["**/*.java", "**/*.kt", "**/*.scala", "**/*.groovy"],
     added_lines: "Runtime\\.getRuntime\\(\\)\\.exec|new ProcessBuilder|Class\\.forName|URLClassLoader|defineClass",
-    ai: "Is this process execution or reflective class loading a deliberate backdoor, or a legitimate use such as a plugin system, a test harness, or a documented integration? Say what the code actually does if you can tell.",
   },
   {
     id: "jvm-gradle-wrapper-changed",
     description: "The Gradle wrapper jar or its distribution URL changed",
     severity: "critical",
-    // gradle-wrapper.jar is a binary that every build executes. Nobody diffs it.
     paths: ["**/gradle/wrapper/**", "**/gradlew", "**/gradlew.bat", "**/mvnw", "**/.mvn/**"],
     change_type: ["added", "modified"],
   },
@@ -80,7 +75,6 @@ export const ruby = [
     severity: "high",
     paths: ["**/*.rb", "**/*.rake", "**/*.erb"],
     added_lines: "\\beval\\(|instance_eval|class_eval|Kernel\\.system|Open3\\.|%x\\{|`[^`]*`",
-    ai: "Is this dynamic evaluation or shell execution a deliberate backdoor, or ordinary Ruby metaprogramming such as a DSL, a Rake task, or a test helper? Say what the code actually does if you can tell.",
   },
 ] as const
 
@@ -96,16 +90,9 @@ export const php = [
     id: "php-dynamic-execution",
     description: "Dynamic execution, shell-out, or unserialisation added",
     severity: "critical",
-    // The classic PHP webshell surface. `unserialize` on attacker data is
-    // object injection, which is code execution by another route.
     paths: ["**/*.php", "**/*.phtml", "**/*.inc"],
-    // `preg_replace` with the /e modifier is bounded rather than using `.*`,
-    // which backtracks. Backticks are dropped from the alternation: in PHP they
-    // are shell execution, but they also appear in every SQL identifier and
-    // docblock, and the specific calls above already cover the real cases.
     added_lines:
       "\\beval\\(|\\bassert\\(|\\bsystem\\(|shell_exec\\(|passthru\\(|proc_open\\(|popen\\(|\\bunserialize\\(|create_function\\(|preg_replace\\s*\\(\\s*['\"][^'\"]{0,80}e['\"]",
-    ai: "Is this dynamic execution a webshell or backdoor, or a legitimate use such as a template engine or a framework internal? Say what the code actually does if you can tell.",
   },
   {
     id: "php-obfuscated-payload",

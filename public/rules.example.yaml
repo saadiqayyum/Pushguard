@@ -6,7 +6,11 @@
 # format so you can write your own, and is what `npm run validate:rules` checks.
 #
 # Every field except id and severity is optional, but a rule needs at least one
-# condition: paths, all_of, when, added_lines, commit_message, unicode_risk, ai.
+# condition: paths, all_of, when, added_lines, commit_message, unicode_risk.
+#
+# AI rules are a separate kind and are not written here: they carry a prompt
+# rather than a pattern, and live in the dashboard. See AI_REVIEW.md, and
+# lib/rules/ai-examples.ts for ready-made ones.
 # All fields on a rule AND together; rules evaluate independently (OR).
 # Globs: picomatch syntax. Regex: JS syntax, max 500 chars, and checked for
 # catastrophic backtracking when saved.
@@ -48,7 +52,6 @@
     - [".github/workflows/**"]
 
 # Content conditions. `added_lines` needs a diff, `commit_message` does not.
-# `ai` asks Claude about the diff and may only add risk, never clear a push.
 - id: example-content-conditions
   description: What the change actually says
   severity: critical
@@ -57,7 +60,6 @@
   # commit_message: '^Merge pull request #\d+'
   # unicode_risk: controls      # bidi overrides, invisible characters
   # unicode_risk: confusables   # the above plus homoglyphs
-  ai: Does this script download or execute anything at install time?
 
 # enabled: false ships a rule switched off. Useful for one that is right for
 # some teams and noise for others.

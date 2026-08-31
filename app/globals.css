@@ -64,73 +64,75 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/* One hue carries the product, 262, and the neutrals are mixed from it rather
+   than from grey, so the dashboard reads as tinted paper instead of newsprint. */
 :root {
   --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
+  --foreground: oklch(0.19 0.03 262);
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
+  --card-foreground: oklch(0.19 0.03 262);
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
+  --popover-foreground: oklch(0.19 0.03 262);
+  --primary: oklch(0.52 0.17 262);
+  --primary-foreground: oklch(0.99 0.005 262);
+  --secondary: oklch(0.967 0.01 262);
+  --secondary-foreground: oklch(0.3 0.06 262);
+  --muted: oklch(0.968 0.007 262);
+  --muted-foreground: oklch(0.52 0.03 262);
+  --accent: oklch(0.955 0.022 262);
+  --accent-foreground: oklch(0.36 0.12 262);
+  --destructive: oklch(0.55 0.19 25);
+  --border: oklch(0.915 0.012 262);
+  --input: oklch(0.915 0.012 262);
+  --ring: oklch(0.6 0.13 262);
+  --chart-1: oklch(0.52 0.17 262);
+  --chart-2: oklch(0.58 0.14 195);
+  --chart-3: oklch(0.55 0.15 152);
+  --chart-4: oklch(0.7 0.15 75);
+  --chart-5: oklch(0.55 0.19 305);
   --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --sidebar: oklch(0.982 0.008 262);
+  --sidebar-foreground: oklch(0.19 0.03 262);
+  --sidebar-primary: oklch(0.52 0.17 262);
+  --sidebar-primary-foreground: oklch(0.99 0.005 262);
+  --sidebar-accent: oklch(0.95 0.024 262);
+  --sidebar-accent-foreground: oklch(0.36 0.12 262);
+  --sidebar-border: oklch(0.915 0.012 262);
+  --sidebar-ring: oklch(0.6 0.13 262);
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --background: oklch(0.165 0.018 262);
+  --foreground: oklch(0.97 0.006 262);
+  --card: oklch(0.215 0.022 262);
+  --card-foreground: oklch(0.97 0.006 262);
+  --popover: oklch(0.215 0.022 262);
+  --popover-foreground: oklch(0.97 0.006 262);
+  --primary: oklch(0.72 0.14 262);
+  --primary-foreground: oklch(0.17 0.03 262);
+  --secondary: oklch(0.285 0.026 262);
+  --secondary-foreground: oklch(0.97 0.006 262);
+  --muted: oklch(0.285 0.022 262);
+  --muted-foreground: oklch(0.72 0.025 262);
+  --accent: oklch(0.33 0.05 262);
+  --accent-foreground: oklch(0.93 0.03 262);
+  --destructive: oklch(0.68 0.19 25);
+  --border: oklch(0.75 0.06 262 / 15%);
+  --input: oklch(0.75 0.06 262 / 20%);
+  --ring: oklch(0.62 0.13 262);
+  --chart-1: oklch(0.72 0.14 262);
+  --chart-2: oklch(0.72 0.13 195);
+  --chart-3: oklch(0.72 0.14 152);
+  --chart-4: oklch(0.78 0.14 75);
+  --chart-5: oklch(0.7 0.17 305);
+  --sidebar: oklch(0.19 0.022 262);
+  --sidebar-foreground: oklch(0.97 0.006 262);
+  --sidebar-primary: oklch(0.72 0.14 262);
+  --sidebar-primary-foreground: oklch(0.17 0.03 262);
+  --sidebar-accent: oklch(0.31 0.045 262);
+  --sidebar-accent-foreground: oklch(0.93 0.03 262);
+  --sidebar-border: oklch(0.75 0.06 262 / 15%);
+  --sidebar-ring: oklch(0.62 0.13 262);
 }
 
 @layer base {
@@ -146,29 +148,42 @@
 }
 
 /* Marketing surface -------------------------------------------------------
-   Scoped to .site so the dashboard's neutral theme is untouched. The palette
-   is the product's own material, paper, ink, and the two colours a unified
-   diff already uses. Chroma appears only where it carries meaning: green is a
-   line added, red is a line flagged. There is no third, decorative accent. */
+   Every colour here names a thing the product does: green is a line added, red
+   is a line flagged, indigo is Pushguard itself, violet is a model's verdict.
+   Nothing in the palette is decoration without a referent. */
 
 /* On :root, not .site: the scan panel renders inside the dashboard too, and it
    is built from these same diff colours. */
 :root {
-  --paper: oklch(0.988 0.003 106);
-  --paper-sunk: oklch(0.968 0.004 106);
-  --ink: oklch(0.19 0.015 265);
-  --ink-soft: oklch(0.475 0.012 265);
-  --rule: oklch(0.895 0.006 265);
-  --add: oklch(0.5 0.125 150);
-  --add-wash: oklch(0.955 0.04 150);
-  --flag: oklch(0.53 0.185 25);
-  --flag-wash: oklch(0.955 0.045 25);
+  --paper: oklch(0.985 0.006 262);
+  --paper-sunk: oklch(0.962 0.013 262);
+  --ink: oklch(0.19 0.03 262);
+  --ink-soft: oklch(0.48 0.032 262);
+  --rule: oklch(0.9 0.014 262);
+  --add: oklch(0.5 0.13 152);
+  --add-wash: oklch(0.95 0.045 152);
+  --flag: oklch(0.53 0.19 25);
+  --flag-wash: oklch(0.955 0.05 25);
+  --brand: oklch(0.52 0.17 262);
+  --brand-wash: oklch(0.952 0.035 262);
+  --ai: oklch(0.55 0.19 305);
+  --ai-wash: oklch(0.955 0.04 305);
 }
 
 .site {
   background: var(--paper);
   color: var(--ink);
   font-family: var(--font-sans);
+}
+
+/* Marketing only. The dashboard shares .site and wants a flat surface behind
+   its tables, so the washes are a separate class the marketing layout adds. */
+.site-wash {
+  background:
+    radial-gradient(56rem 26rem at 12% -6rem, var(--brand-wash), transparent 68%),
+    radial-gradient(46rem 24rem at 88% -8rem, var(--ai-wash), transparent 64%),
+    var(--paper);
+  background-repeat: no-repeat;
 }
 
 /* The monospace face is used on both surfaces, so it is not scoped to either. */
@@ -263,10 +278,56 @@
   background: var(--flag-wash);
 }
 
-.gutter-mark[data-mark="n"] {
-  color: var(--ink-soft);
-  background: var(--paper-sunk);
+/* A model's verdict is a sentence, not a quoted line: it wraps instead of
+   scrolling off the side, and drops the monospace that says "this is code". */
+.diff-note {
+  font-size: 0.8125rem;
+  line-height: 1.7;
+  padding: 0.375rem 0.5rem;
+  border-radius: 0.25rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--flag);
+  background: var(--flag-wash);
 }
+
+.gutter-mark[data-mark="n"] {
+  color: var(--brand);
+  background: var(--brand-wash);
+}
+
+.gutter-mark[data-mark="~"] {
+  color: var(--ai);
+  background: var(--ai-wash);
+}
+
+/* A signal the product looks for, named in the colour it is reported in. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border-radius: 999px;
+  padding: 0.3rem 0.7rem 0.3rem 0.6rem;
+  font-family: var(--font-display), ui-monospace, monospace;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--ink-soft);
+  background: color-mix(in oklch, var(--paper) 70%, transparent);
+  border: 1px solid var(--rule);
+}
+
+.chip::before {
+  content: "";
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.chip[data-tone="flag"] { color: var(--flag); border-color: color-mix(in oklch, var(--flag) 25%, var(--rule)); }
+.chip[data-tone="add"] { color: var(--add); border-color: color-mix(in oklch, var(--add) 25%, var(--rule)); }
+.chip[data-tone="ai"] { color: var(--ai); border-color: color-mix(in oklch, var(--ai) 25%, var(--rule)); }
+.chip[data-tone="brand"] { color: var(--brand); border-color: color-mix(in oklch, var(--brand) 25%, var(--rule)); }
 
 .diff-line {
   font-family: var(--font-display), ui-monospace, monospace;
@@ -280,6 +341,78 @@
   background: var(--flag-wash);
 }
 
+/* Behind the whole page: a page of code at a distance, and the product's own
+   marks drifting up through it. Fixed to the viewport, so it stays put while
+   the content scrolls over it. Decoration only, so it is aria-hidden in the
+   markup and holds still when the reader has asked for less motion.
+   It sits at z-index -1 inside .site-wash, which isolates: an element's own
+   background paints before its negative-index children, so the washes stay
+   under this and the content stays over it. */
+.page-field {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+  mask-image: linear-gradient(to right, transparent, black 12%, black 88%, transparent);
+}
+
+.page-field::before {
+  content: "";
+  position: absolute;
+  inset: -6rem;
+  background-image:
+    linear-gradient(to right, color-mix(in oklch, var(--brand) 7%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in oklch, var(--brand) 7%, transparent) 1px, transparent 1px);
+  background-size: 3.5rem 3.5rem;
+}
+
+.page-mark {
+  position: absolute;
+  font-family: var(--font-display), ui-monospace, monospace;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  white-space: nowrap;
+  opacity: 0.24;
+  color: var(--ink-soft);
+}
+
+.page-mark[data-tone="add"] { color: var(--add); }
+.page-mark[data-tone="flag"] { color: var(--flag); }
+.page-mark[data-tone="ai"] { color: var(--ai); }
+.page-mark[data-tone="brand"] { color: var(--brand); }
+
+@media (prefers-reduced-motion: no-preference) {
+  .page-field::before {
+    animation: drift 24s linear infinite;
+  }
+
+  .page-mark {
+    animation: rise linear infinite;
+  }
+}
+
+@keyframes drift {
+  to {
+    background-position: 3.5rem -3.5rem;
+  }
+}
+
+@keyframes rise {
+  0% {
+    transform: translateY(3rem);
+    opacity: 0;
+  }
+  20%,
+  75% {
+    opacity: 0.24;
+  }
+  100% {
+    transform: translateY(-9rem);
+    opacity: 0;
+  }
+}
+
 @media (prefers-reduced-motion: no-preference) {
   .reveal {
     animation: reveal 0.32s cubic-bezier(0.2, 0.7, 0.3, 1) both;
@@ -291,7 +424,7 @@
     position: absolute;
     inset-inline: 0;
     height: 1px;
-    background: var(--add);
+    background: var(--brand);
     animation: sweep 1.6s ease-in-out infinite;
   }
 }

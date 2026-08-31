@@ -3,9 +3,7 @@ import Link from "next/link"
 
 export const metadata: Metadata = { title: "Installation requested. Pushguard" }
 
-// GitHub returns setup_action=request when the installer is not an owner of the
-// organization and an owner has to approve. There is no installation to sign
-// into yet, so this is the whole of the state.
+// GitHub returns setup_action=request when the installer is not an owner of the.
 export default function InstallPendingPage() {
   return (
     <div className="mx-auto w-full max-w-5xl px-4 sm:px-6 lg:px-8 pt-20 pb-8">
@@ -17,7 +15,7 @@ export default function InstallPendingPage() {
       </p>
       <Link
         href="/signin"
-        className="mt-8 inline-flex h-12 items-center rounded-xl bg-[var(--ink)] px-6 font-sans text-[0.9375rem] font-medium text-[var(--paper)] transition-opacity hover:opacity-90"
+        className="mt-8 inline-flex h-12 items-center rounded-xl bg-[var(--brand)] px-6 font-sans text-[0.9375rem] font-medium text-[var(--paper)] transition-opacity hover:opacity-90"
       >
         Sign in
       </Link>

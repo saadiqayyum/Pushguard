@@ -35,7 +35,6 @@ type FormState = {
   changeTypes: ChangeType[]
   forced: "any" | "yes"
   addedLines: string
-  ai: string
 }
 
 const INITIAL: FormState = {
@@ -49,7 +48,6 @@ const INITIAL: FormState = {
   changeTypes: [...CHANGE_TYPES],
   forced: "any",
   addedLines: "",
-  ai: "",
 }
 
 // Reverse of buildRule, for editing and duplicating.
@@ -65,7 +63,6 @@ function toForm(rule: Rule): FormState {
     changeTypes: rule.change_type ?? [...CHANGE_TYPES],
     forced: rule.when?.forced ? "yes" : "any",
     addedLines: rule.added_lines ?? "",
-    ai: rule.ai ?? "",
   }
 }
 
@@ -73,8 +70,6 @@ type TestResult = { matched: boolean; matchedFiles: string[]; matchedLines: stri
 
 export type RuleFormMode =
   | { kind: "create" }
-  // Editing patches an existing document; the rule id is its stable key and
-  // stays fixed. Duplicating starts a new rule from an existing one.
   | { kind: "edit"; docId: string; rule: Rule }
   | { kind: "duplicate"; rule: Rule }
 
@@ -100,9 +95,6 @@ export function RuleForm({
 
   const set = (key: keyof FormState) => (value: string) => setForm((f) => ({ ...f, [key]: value }))
 
-  // Editing and duplicating carry the original rule through so conditions the
-  // form cannot express (hour_utc windows, branch created/deleted) survive a
-  // round trip instead of being silently dropped.
   const base = mode.kind === "create" ? undefined : mode.rule
   const built = useMemo(() => buildRule(form, base), [form, base])
 
@@ -206,8 +198,6 @@ export function RuleForm({
           />
         </Field>
 
-        {/* Free text, not a picker: branch rules are usually patterns
-            (release/*, feature/*) that no branch listing would contain. */}
         <Field label="Branches" hint="globs, one per line, empty = all">
           <Textarea rows={2} value={form.branches} onChange={(e) => set("branches")(e.target.value)} placeholder={"main\nrelease/*"} />
         </Field>
@@ -263,10 +253,6 @@ export function RuleForm({
             />
           </Field>
         </div>
-
-        <Field label="AI review question" hint="optional; Claude reviews the diff with this question">
-          <Textarea rows={2} value={form.ai} onChange={(e) => set("ai")(e.target.value)} placeholder="Does this diff add code that executes on install?" />
-        </Field>
 
         {!built.success && form.id !== "" && <p className="text-xs text-destructive">{built.error}</p>}
 
@@ -338,9 +324,13 @@ function buildRule(
   form: FormState,
   base?: Rule,
 ): { success: true; rule: Rule } | { success: false; error: string } {
-  // Start from the original so fields this form has no control for
-  // (when.hour_utc, when.branch_created/deleted) survive an edit.
-  const candidate: Record<string, unknown> = { ...(base ?? {}) }
+  // Only keys the schema knows. The catalog browser tags rows with `kind` and
+  // `pack` so it can group them, and `ruleSchema` is strict, so spreading the
+  // source object wholesale turned "duplicate this rule" into a rejected save.
+  const known = new Set(Object.keys(ruleSchema.shape))
+  const candidate: Record<string, unknown> = Object.fromEntries(
+    Object.entries(base ?? {}).filter(([field]) => known.has(field)),
+  )
   candidate.id = form.id
   candidate.severity = form.severity
   candidate.enabled = base?.enabled ?? true
@@ -358,7 +348,6 @@ function buildRule(
     "exclude_paths",
     splitLines(form.excludePaths).length > 0 ? splitLines(form.excludePaths) : undefined,
   )
-  // All three selected is the schema default; omit it rather than store noise.
   assign(
     "change_type",
     form.changeTypes.length > 0 && form.changeTypes.length < CHANGE_TYPES.length
@@ -366,7 +355,6 @@ function buildRule(
       : undefined,
   )
   assign("added_lines", form.addedLines || undefined)
-  assign("ai", form.ai || undefined)
 
   const when: Record<string, unknown> = { ...(base?.when ?? {}) }
   if (form.forced === "yes") when.forced = true
