@@ -35,7 +35,7 @@ const context = (overrides: Partial<PushContext> = {}): PushContext => ({
 test("rules run on pushes unless `on` says otherwise", () => {
   const pr = context({
     event: "pull_request",
-    pullRequest: { number: 7, base: "main", draft: false, opened: true },
+    pullRequest: { number: 7, head: "feature", draft: false, opened: true },
   })
   const pushOnly = ruleSchema.parse({ id: "a", severity: "high", paths: ["package.json"] })
   assert.ok(evaluateRule(pushOnly, context()))
@@ -51,17 +51,17 @@ test("rules run on pushes unless `on` says otherwise", () => {
   assert.equal(scannableRules([prOnly, both]).length, 1)
 })
 
-test("base_branches and pr conditions need a pull request", () => {
+test("a pull request matches `branches` on its base and pr conditions need one", () => {
   const rule = ruleSchema.parse({
     id: "release-pr",
     severity: "high",
     on: ["push", "pull_request"],
-    base_branches: ["release/*"],
+    branches: ["release/*"],
     paths: ["package.json"],
     when: { pr_draft: false },
   })
   const pr = (base: string, draft: boolean) =>
-    context({ event: "pull_request", pullRequest: { number: 1, base, draft, opened: false } })
+    context({ event: "pull_request", branch: base, pullRequest: { number: 1, head: "feature", draft, opened: false } })
   assert.equal(evaluateRule(rule, context()), null)
   assert.ok(evaluateRule(rule, pr("release/2.0", false)))
   assert.equal(evaluateRule(rule, pr("main", false)), null)

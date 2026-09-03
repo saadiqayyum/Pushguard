@@ -36,7 +36,6 @@ type FormState = {
   repos: string[]
   on: ChangeSource[]
   branches: string
-  baseBranches: string
   paths: string
   excludePaths: string
   changeTypes: ChangeType[]
@@ -51,7 +50,6 @@ const INITIAL: FormState = {
   repos: [],
   on: ["push"],
   branches: "",
-  baseBranches: "",
   paths: "",
   excludePaths: "",
   changeTypes: [...CHANGE_TYPES],
@@ -68,7 +66,6 @@ function toForm(rule: Rule): FormState {
     repos: rule.repos ?? [],
     on: rule.on ?? ["push"],
     branches: (rule.branches ?? []).join("\n"),
-    baseBranches: (rule.base_branches ?? []).join("\n"),
     paths: (rule.paths ?? []).join("\n"),
     excludePaths: (rule.exclude_paths ?? []).join("\n"),
     changeTypes: rule.change_type ?? [...CHANGE_TYPES],
@@ -230,16 +227,9 @@ export function RuleForm({
           </div>
         </Field>
 
-        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
-          <Field label="Branches" hint="globs, one per line, empty = all">
-            <Textarea rows={2} value={form.branches} onChange={(e) => set("branches")(e.target.value)} placeholder={"main\nrelease/*"} />
-          </Field>
-          {form.on.includes("pull_request") && (
-            <Field label="Base branches" hint="globs, one per line, empty = all">
-              <Textarea rows={2} value={form.baseBranches} onChange={(e) => set("baseBranches")(e.target.value)} placeholder={"main"} />
-            </Field>
-          )}
-        </div>
+        <Field label="Branches" hint="globs, one per line, empty = all; a pull request matches on its base">
+          <Textarea rows={2} value={form.branches} onChange={(e) => set("branches")(e.target.value)} placeholder={"main\nrelease/*"} />
+        </Field>
 
         <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
           <Field label="Paths" hint="changed-file globs, one per line">
@@ -386,12 +376,6 @@ function buildRule(
     form.on.length === 1 && form.on[0] === "push" ? undefined : [...form.on].sort(),
   )
   assign("branches", splitLines(form.branches).length > 0 ? splitLines(form.branches) : undefined)
-  assign(
-    "base_branches",
-    form.on.includes("pull_request") && splitLines(form.baseBranches).length > 0
-      ? splitLines(form.baseBranches)
-      : undefined,
-  )
   assign("paths", splitLines(form.paths).length > 0 ? splitLines(form.paths) : undefined)
   assign(
     "exclude_paths",

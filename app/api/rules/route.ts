@@ -9,6 +9,8 @@ import { withErrorHandler } from "@/lib/route"
 import { requireManagedTenant } from "@/lib/tenant"
 import { createRuleBody } from "@/schemas/api"
 
+// Regex safety checks may take seconds each; see schemas/rule-safety.ts.
+export const maxDuration = 60
 
 export const GET = withErrorHandler("/api/rules", async (request) => {
   const { owner } = await requireManagedTenant()

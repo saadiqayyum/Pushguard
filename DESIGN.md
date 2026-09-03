@@ -390,8 +390,9 @@ per repository at install, upserted by the `pull_request` webhook, and a closed
 or merged one is deleted. The tab reads it through the same `repo_access` gate
 as alerts. The GitHub App must subscribe to the `pull_request` event.
 
-Rules run on pushes unless `on` includes `pull_request`. A pull request is
-evaluated as a whole, `base.sha...head.sha`, on opened, reopened, synchronize
+Rules run on pushes unless `on` includes `pull_request`. On a pull request,
+`branches` matches the base, the branch the rule guards, and the shipped rules
+all bind to main. A pull request is evaluated as a whole, `base.sha...head.sha`, on opened, reopened, synchronize
 and ready_for_review, and the alert threads on repeat rather than filing again.
 The alert is an issue as always; the pull request gets one comment pointing at
 it, on first filing only. Dedup by commit is per source: the branch push and

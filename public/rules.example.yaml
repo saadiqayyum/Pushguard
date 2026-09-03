@@ -20,12 +20,12 @@
 # Pull requests. `on` picks the events a rule runs for; absent means pushes
 # only. A pull request is evaluated as a whole, base...head, every time it
 # changes, and repeats thread onto the same alert. The alert is an issue; the
-# pull request gets a comment pointing at it.
+# pull request gets a comment pointing at it. `branches` matches the base.
 - id: example-pull-request
   description: Workflow changes proposed against a release branch
   severity: high
   on: [pull_request]
-  base_branches: [main, "release/*"]
+  branches: [main, "release/*"]
   paths: [".github/workflows/**"]
   when:
     pr_draft: false         # skip drafts

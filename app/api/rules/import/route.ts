@@ -8,6 +8,9 @@ import { requireManagedTenant } from "@/lib/tenant"
 import { importRulesBody } from "@/schemas/api"
 import { checkedRulesFileSchema } from "@/schemas/rule-safety"
 
+// Regex safety checks may take seconds each; see schemas/rule-safety.ts.
+export const maxDuration = 60
+
 // Bulk import, YAML or JSON.
 export const POST = withErrorHandler("/api/rules/import", async (request) => {
   const { content } = importRulesBody.parse(await request.json())

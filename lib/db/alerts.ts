@@ -29,7 +29,7 @@ export type AlertDoc = {
   pullRequest?: { number: number; base: string; url: string }
   source: AlertSource
   occurrences: number
-  sightings?: { at: Date; ruleIds: string[]; sha: string | null; by: string | null }[]
+  sightings?: { at: Date; ruleIds: string[]; sha: string | null; by: string | null; pullRequest?: number }[]
   lastSeenAt: Date
   state: "open" | "closed"
   acknowledgedAt: Date | null
@@ -65,7 +65,7 @@ export async function alertExistsForCommit(repo: string, sha: string, source: Al
 
 export async function recordOccurrence(
   id: string,
-  sighting: { ruleIds: string[]; sha: string | null; by: string | null },
+  sighting: { ruleIds: string[]; sha: string | null; by: string | null; pullRequest?: number },
 ): Promise<number> {
   const updated = await alerts().findOneAndUpdate(
     { _id: id },

@@ -79,7 +79,7 @@ export async function evaluatePullRequest(
   const context: PushContext = {
     event: "pull_request",
     repo,
-    branch: pr.head.ref,
+    branch: pr.base.ref,
     forced: false,
     senderFirstPush: false,
     branchCreated: false,
@@ -89,10 +89,10 @@ export async function evaluatePullRequest(
     hourUtc: new Date().getUTCHours(),
     files,
     commitMessages: [],
-    pullRequest: { number: payload.number, base: pr.base.ref, draft: pr.draft, opened: payload.action === "opened" },
+    pullRequest: { number: payload.number, head: pr.head.ref, draft: pr.draft, opened: payload.action === "opened" },
   }
   const matches = evaluateRules(rules, context)
-  const aiFindings = await runAiRules(installation, repo, pr.head.ref, pr.head.sha, files, context)
+  const aiFindings = await runAiRules(installation, repo, pr.base.ref, pr.head.sha, files, context)
 
   logger.info("pull_request_evaluated", {
     deliveryId,
@@ -112,7 +112,7 @@ export async function evaluatePullRequest(
     files,
     pr.base.sha,
     context,
-    "pull_request",
+    { number: payload.number, base: pr.base.ref, url: pr.html_url },
   )
   if (matches.length === 0 && aiFindings.length === 0) return
   await processMatches(installation, fromPullRequest(payload, files), matches, null, aiFindings)

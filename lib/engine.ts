@@ -6,9 +6,11 @@ export type ChangedFile = { path: string; changeType: ChangeType };
 
 export type ChangeSource = "push" | "pull_request";
 
+// For a pull request, `branch` is the base: the branch the change is aimed at,
+// which is what a rule's `branches` guards. The head is in `pullRequest`.
 export type PushContext = {
   event?: ChangeSource;
-  pullRequest?: { number: number; base: string; draft: boolean; opened: boolean };
+  pullRequest?: { number: number; head: string; draft: boolean; opened: boolean };
   repo: string;
   branch: string;
   forced: boolean;
@@ -91,19 +93,9 @@ export function evaluateRule(
   return { rule, matchedFiles, matchedMessages, needsDiff };
 }
 
-// A rule runs on pushes unless it says otherwise. `base_branches` is a pull
-// request fact, so asking for it on a push is a miss, not a wildcard.
-export function runsOn(
-  rule: Pick<Rule, "on" | "base_branches">,
-  context: Pick<PushContext, "event" | "pullRequest">,
-): boolean {
-  const event = context.event ?? "push";
-  if (!(rule.on ?? ["push"]).includes(event)) return false;
-  if (rule.base_branches) {
-    if (!context.pullRequest) return false;
-    if (!matchesAny(rule.base_branches, context.pullRequest.base)) return false;
-  }
-  return true;
+// A rule runs on pushes unless it says otherwise.
+export function runsOn(rule: Pick<Rule, "on">, context: Pick<PushContext, "event">): boolean {
+  return (rule.on ?? ["push"]).includes(context.event ?? "push");
 }
 
 // A scan reads committed code, not a push event. Rules that ask about the push.

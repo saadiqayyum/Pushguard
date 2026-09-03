@@ -9,6 +9,9 @@ import { requireManagedTenant } from "@/lib/tenant"
 import { updateRuleBody } from "@/schemas/api"
 
 
+// Regex safety checks may take seconds each; see schemas/rule-safety.ts.
+export const maxDuration = 60
+
 export const PATCH = withErrorHandler("/api/rules/[id]", async (request, { params }) => {
   const { id } = await params
   const body = await updateRuleBody.parseAsync(await request.json())

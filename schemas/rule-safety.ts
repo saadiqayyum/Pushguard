@@ -6,7 +6,13 @@ import { ruleSchema, rulesFileSchema, type Rule } from "@/schemas/rule"
 // Rules validated for catastrophic backtracking, for the paths that *write* a
 // rule.
 
-const CHECK_TIMEOUT_MS = 5000
+// A long alternation takes recheck's pure backend about 5s on a laptop and
+// longer on a serverless CPU. Saving a rule is rare; the wait is acceptable.
+const CHECK_TIMEOUT_MS = 20_000
+
+// recheck's automatic choice spawns a native agent, which a serverless function
+// cannot rely on. Pure runs in-process and answers every shipped rule in <300ms.
+if (process.env.NEXT_RUNTIME) process.env.RECHECK_BACKEND ??= "pure"
 
 export type RegexVerdict = { ok: true } | { ok: false; reason: string }
 
@@ -28,7 +34,7 @@ export async function checkRegexSafety(source: string): Promise<RegexVerdict> {
     }
   }
   const kind = result.error?.kind ?? "unknown"
-  logger.warn("regex_check_unknown", { kind, length: source.length })
+  logger.warn("regex_check_unknown", { kind, source: source.slice(0, 120), checker: result.checker })
   return {
     ok: false,
     reason:

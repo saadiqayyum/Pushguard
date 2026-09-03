@@ -73,7 +73,6 @@ export const ruleSchema = z
     on: z.array(z.enum(CHANGE_SOURCES)).min(1).max(2).optional(),
     repos: z.array(glob).min(1).max(50).optional(),
     branches: z.array(glob).min(1).max(50).optional(),
-    base_branches: z.array(glob).min(1).max(50).optional(),
     paths: z.array(glob).min(1).max(100).optional(),
     all_of: z.array(z.array(glob).min(1).max(50)).min(2).max(5).optional(),
     exclude_paths: z.array(glob).min(1).max(100).optional(),

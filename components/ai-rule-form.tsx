@@ -51,6 +51,7 @@ export const BLANK_AI_RULE: AiRule = {
   enabled: true,
   prompt: "",
   scope: "changed",
+  on: ["pull_request", "push"],
   budget: 40,
 };
 
@@ -173,7 +174,7 @@ export function AiRuleForm({
           <p className="text-xs text-muted-foreground">
             {form.scope === "repository"
               ? "Runs in the background: the model navigates the repository, reading files and following names."
-              : "Runs on the push, reading only the changed files your paths match."}
+              : "Runs on the push or pull request, reading only the changed files your paths match."}
           </p>
         </div>
         {form.scope === "repository" && (
@@ -226,20 +227,6 @@ export function AiRuleForm({
             })}
           </div>
         </div>
-        {(form.on ?? []).includes("pull_request") && (
-          <div className="space-y-1.5">
-            <Label htmlFor="base-branches">Base branches</Label>
-            <Input
-              id="base-branches"
-              value={(form.base_branches ?? []).join(", ")}
-              placeholder="main, release/*"
-              onChange={(event) => {
-                const globs = event.target.value.split(",").map((s) => s.trim()).filter(Boolean);
-                setForm({ ...form, base_branches: globs.length > 0 ? globs : undefined });
-              }}
-            />
-          </div>
-        )}
       </div>
 
       <div className="space-y-1.5">

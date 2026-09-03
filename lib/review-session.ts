@@ -64,6 +64,7 @@ export async function enqueueReviewSession(input: {
   branch: string
   sha: string
   source: ReviewSessionDoc["source"]
+  pullRequest?: ReviewSessionDoc["pullRequest"]
   rules: ReviewSessionDoc["rules"]
   seeds: string[]
   baseSha?: string
@@ -79,6 +80,7 @@ export async function enqueueReviewSession(input: {
           branch: input.branch,
           sha: input.sha,
           source: input.source,
+          ...(input.pullRequest ? { pullRequest: input.pullRequest } : {}),
           rules: input.rules,
           seeds: input.seeds.slice(0, MAX_SEEDS),
           ...(input.baseSha ? { baseSha: input.baseSha } : {}),
@@ -109,7 +111,7 @@ export async function queueRepositoryRules(
   changed: ChangedFile[],
   baseSha?: string,
   context?: PushContext,
-  source: ReviewSessionDoc["source"] = "push",
+  pullRequest?: ReviewSessionDoc["pullRequest"],
 ): Promise<void> {
   const all = await getActiveAiRules(installation.installedBy)
   const wanted = all.filter(
@@ -130,7 +132,8 @@ export async function queueRepositoryRules(
     repo,
     branch,
     sha,
-    source,
+    source: pullRequest ? "pull_request" : "push",
+    pullRequest,
     baseSha,
     rules: wanted.map((rule) => ({
       id: rule.id,
@@ -450,6 +453,7 @@ async function fileSessionFindings(id: string): Promise<void> {
     ruleIds,
     findings: session.findings,
     source: session.source,
+    ...(session.pullRequest ? { pullRequest: session.pullRequest } : {}),
     title: `[${severity}] ${session.repo}: ${ruleIds.join(", ")}`,
     body: [
       `Whole-repository review of \`${session.repo}\` at \`${session.sha.slice(0, 7)}\`.`,

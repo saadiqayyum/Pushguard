@@ -72,6 +72,23 @@ const SOURCE_LABELS: Record<AlertDoc["source"], string[]> = {
 export type FiledAlert = { number: number; url: string; threaded: boolean }
 
 // The one place an alert reaches GitHub.
+// The pull request gets one comment per alert, on the first sighting from it.
+async function commentOnPullRequest(input: {
+  installationId: number
+  target: string
+  pullRequest: NonNullable<AlertDoc["pullRequest"]>
+  issue: number
+  severity: Severity
+  ruleIds: string[]
+}): Promise<void> {
+  await commentOnIssue(
+    input.installationId,
+    input.target,
+    input.pullRequest.number,
+    `Pushguard flagged this pull request. See #${input.issue} for the ${input.severity} finding${input.ruleIds.length === 1 ? "" : "s"}: \`${input.ruleIds.join("\`, \`")}\`.`,
+  )
+}
+
 export async function fileOrThreadAlert(input: {
   installationId: number
   target: string
@@ -89,10 +106,15 @@ export async function fileOrThreadAlert(input: {
 }): Promise<FiledAlert> {
   const existing = await openAlertForRules(input.target, input.ruleIds)
   if (existing) {
+    const pullRequestSeen =
+      input.pullRequest !== undefined &&
+      (existing.pullRequest?.number === input.pullRequest.number ||
+        (existing.sightings ?? []).some((s) => s.pullRequest === input.pullRequest?.number))
     const seen = await recordOccurrence(existing._id, {
       ruleIds: input.ruleIds,
       sha: input.push?.after ?? null,
       by: input.push?.sender ?? input.by ?? null,
+      ...(input.pullRequest ? { pullRequest: input.pullRequest.number } : {}),
     })
     await commentOnIssue(
       input.installationId,
@@ -108,6 +130,9 @@ export async function fileOrThreadAlert(input: {
       rules: input.ruleIds,
       coveredBy: existing.ruleIds,
     })
+    if (input.pullRequest && !pullRequestSeen) {
+      await commentOnPullRequest({ ...input, pullRequest: input.pullRequest, issue: existing.number })
+    }
     return { number: existing.number, url: existing.url, threaded: true }
   }
 
@@ -138,6 +163,9 @@ export async function fileOrThreadAlert(input: {
     rules: input.ruleIds,
     source: input.source,
   })
+  if (input.pullRequest) {
+    await commentOnPullRequest({ ...input, pullRequest: input.pullRequest, issue: issue.number })
+  }
   return { number: issue.number, url: issue.html_url, threaded: false }
 }
 
@@ -241,15 +269,6 @@ export async function processMatches(
     threaded: filed.threaded,
     erased: forensics?.erasedCommitCount ?? 0,
   })
-
-  if (event.pullRequest && !filed.threaded && target.repo === repo) {
-    await commentOnIssue(
-      installationId,
-      repo,
-      event.pullRequest.number,
-      `Pushguard flagged this pull request. See #${filed.number} for the ${severity} finding${ruleIds.length === 1 ? "" : "s"}: \`${ruleIds.join("\`, \`")}\`.`,
-    )
-  }
 }
 
 // Put the alert on someone's "Assigned to you" list. Only a user handle can be.
