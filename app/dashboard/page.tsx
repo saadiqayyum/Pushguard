@@ -1,9 +1,8 @@
-import { redirect } from "next/navigation";
 import { AlertsView, type AlertRow } from "@/components/alerts-view";
 import { OrgSwitcher } from "@/components/org-switcher";
 import { PageHeader } from "@/components/page-header";
 import { Pager } from "@/components/pager";
-import { auth, memberScopes } from "@/lib/auth";
+import { pageMember } from "@/lib/auth";
 import { listAlerts } from "@/lib/db";
 import { parsePaging } from "@/lib/paging";
 import { resolveTenant } from "@/lib/tenant";
@@ -19,18 +18,13 @@ export default async function AlertsPage({
   const paging = parsePaging(params);
   const archived = params.archived === "1";
 
-  const session = await auth();
-  if (!session?.user) redirect("/signin");
-
-  const tenant = await resolveTenant(
-    memberScopes({ login: session.login ?? "", orgs: session.orgs ?? [] }),
-  );
+  const member = await pageMember();
+  const tenant = await resolveTenant(member);
   if (!tenant.current) return null;
   const { org } = tenant.current;
 
-  const login = session.login || session.user.name || "";
   const page = await listAlerts(
-    login,
+    member.login,
     tenant.allOrgs ? [] : [org],
     paging,
     archived,

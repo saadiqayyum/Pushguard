@@ -1,5 +1,5 @@
 import { resolveAlertTarget } from "@/lib/alert-target"
-import { auth, githubToken } from "@/lib/auth"
+import { githubToken, requireUser } from "@/lib/auth"
 import { db, MAX_SCAN_FINDINGS, STUCK_AFTER_MS, accessibleRepos, activeInstallation, canReadRepo, installationById, noteRepo, repoRecord, type InstallationDoc, type ScanDoc, type ScanFinding, type ScanRepo } from "@/lib/db"
 import { catalogRules } from "@/lib/rules/catalog"
 import { confirmContentMatches, evaluateRules, scannableRules, type PushContext } from "@/lib/engine"
@@ -31,11 +31,17 @@ export const SCAN_LIMITS = { perDay: 25, repos: 20 } as const
 export type Requester = { login: string; token: string }
 
 export async function resolveRequester(): Promise<Requester> {
-  const session = await auth()
-  if (!session?.user) throw new AppError("unauthorized", "Sign in required")
+  const { login } = await requireUser()
   const token = await githubToken()
   if (!token) throw new AppError("unauthorized", "Your GitHub session expired. Sign in again.")
-  return { login: session.login || session.user.name || "", token }
+  return { login, token }
+}
+
+// A scan is private to the account that ran it. Missing and someone else's
+// both come back null, so an id does not reveal that another account owns it.
+export async function readableScan(id: string, login: string): Promise<ScanDoc | null> {
+  if (!login) return null
+  return db.scans().findOne({ _id: id, owner: login })
 }
 
 // What the picker may offer, read entirely from the projection.
@@ -85,11 +91,6 @@ async function rulesForScan(installation: InstallationDoc | null): Promise<Rule[
 async function usedToday(owner: string): Promise<number> {
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000)
   return db.scans().countDocuments({ owner, createdAt: { $gte: since } })
-}
-
-// A scan is private to the account that ran it. There is no shareable variant.
-export function canReadScan(scan: ScanDoc, owner: string | null): boolean {
-  return owner !== null && scan.owner === owner
 }
 
 export type ScanRequest = { installationId: number; repo?: string; branch?: string; aiKey?: string }

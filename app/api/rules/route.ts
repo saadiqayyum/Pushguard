@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server"
-import { memberScopes, requireUser } from "@/lib/auth"
 import { db } from "@/lib/db"
 import { catalogById, PACKS } from "@/lib/rules/catalog"
 import { resolveRules, serializeResolvedRule, upsertOverride } from "@/lib/rules"
@@ -7,19 +6,12 @@ import { AppError } from "@/lib/errors"
 import { logger } from "@/lib/logger"
 import { parsePaging } from "@/lib/paging"
 import { withErrorHandler } from "@/lib/route"
-import { resolveTenant } from "@/lib/tenant"
+import { requireManagedTenant } from "@/lib/tenant"
 import { createRuleBody } from "@/schemas/api"
 
-// Rules are owned by an account, not an org, so the caller's own installations.
-async function requireRuleOwner(): Promise<{ owner: string; login: string }> {
-  const user = await requireUser()
-  const tenant = await resolveTenant(memberScopes(user))
-  if (!tenant.current) throw new AppError("forbidden", "No Pushguard installation for this account")
-  return { owner: tenant.current.installedBy, login: user.login }
-}
 
 export const GET = withErrorHandler("/api/rules", async (request) => {
-  const { owner } = await requireRuleOwner()
+  const { owner } = await requireManagedTenant()
   const url = new URL(request.url)
   const paging = parsePaging(url.searchParams)
 
@@ -51,7 +43,7 @@ export const GET = withErrorHandler("/api/rules", async (request) => {
 
 export const POST = withErrorHandler("/api/rules", async (request) => {
   const { rule } = createRuleBody.parse(await request.json())
-  const { owner, login } = await requireRuleOwner()
+  const { owner, login } = await requireManagedTenant()
 
   if (catalogById.has(rule.id)) {
     throw new AppError(

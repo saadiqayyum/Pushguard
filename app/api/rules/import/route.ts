@@ -1,21 +1,17 @@
 import { NextResponse } from "next/server"
 import { parse as parseYaml } from "yaml"
-import { memberScopes, requireUser } from "@/lib/auth"
 import { db, type RuleDoc } from "@/lib/db"
-import { AppError } from "@/lib/errors"
 import { logger } from "@/lib/logger"
+import { AppError } from "@/lib/errors"
 import { withErrorHandler } from "@/lib/route"
-import { resolveTenant } from "@/lib/tenant"
+import { requireManagedTenant } from "@/lib/tenant"
 import { importRulesBody } from "@/schemas/api"
 import { checkedRulesFileSchema } from "@/schemas/rule-safety"
 
 // Bulk import, YAML or JSON.
 export const POST = withErrorHandler("/api/rules/import", async (request) => {
   const { content } = importRulesBody.parse(await request.json())
-  const user = await requireUser()
-  const tenant = await resolveTenant(memberScopes(user))
-  if (!tenant.current) throw new AppError("forbidden", "No Pushguard installation for this account")
-  const owner = tenant.current.installedBy
+  const { login, owner } = await requireManagedTenant()
 
   let parsed: unknown
   try {
@@ -42,7 +38,7 @@ export const POST = withErrorHandler("/api/rules/import", async (request) => {
       ruleId: rule.id,
       body: rule,
       enabled: rule.enabled,
-      createdBy: existing?.createdBy ?? user.login,
+      createdBy: existing?.createdBy ?? login,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     }
@@ -52,13 +48,13 @@ export const POST = withErrorHandler("/api/rules/import", async (request) => {
       ruleId: _id,
       body: rule,
       action: existing ? "updated" : "created",
-      changedBy: user.login,
+      changedBy: login,
       changedAt: now,
     })
     if (existing) updated++
     else created++
   }
 
-  logger.info("rules_imported", { owner, by: user.login, created, updated })
+  logger.info("rules_imported", { owner, by: login, created, updated })
   return NextResponse.json({ data: { created, updated, total: rules.length } })
 })

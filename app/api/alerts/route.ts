@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { requireMember } from "@/lib/auth"
+import { requireUser } from "@/lib/auth"
 import { listAlerts } from "@/lib/db"
 import { parsePaging } from "@/lib/paging"
 import { withErrorHandler } from "@/lib/route"
@@ -8,10 +8,10 @@ import { withErrorHandler } from "@/lib/route"
 export const GET = withErrorHandler("/api/alerts", async (request) => {
   const url = new URL(request.url)
   const org = url.searchParams.get("org") ?? ""
-  const member = await requireMember(org)
+  const member = await requireUser()
   const paging = parsePaging(url.searchParams)
 
-  const result = await listAlerts(member.login, [org], paging)
+  const result = await listAlerts(member.login, org ? [org] : [], paging)
   return NextResponse.json({
     data: result.alerts.map((alert) => ({
       number: alert.number,

@@ -1,8 +1,6 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
 import { NewScanDialog } from "@/components/new-scan-dialog";
-import { memberScopes } from "@/lib/auth";
-import { installationForDisplay } from "@/lib/db";
+import { aiKeyOptions } from "@/lib/db";
 import { resolveTenant } from "@/lib/tenant";
 import { TableShell } from "@/components/table-shell";
 import { TableToolbar } from "@/components/table-toolbar";
@@ -16,7 +14,7 @@ import {
 import { formatTimestamp } from "@/lib/format";
 import { PageHeader } from "@/components/page-header";
 import { Pager } from "@/components/pager";
-import { auth } from "@/lib/auth";
+import { pageMember } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { installUrl } from "@/lib/install-url";
 import { parsePaging } from "@/lib/paging";
@@ -41,21 +39,11 @@ export default async function ScansPage({
   searchParams: Promise<{ page?: string }>;
 }) {
   const paging = parsePaging(await searchParams);
-  const session = await auth();
-  if (!session?.user) redirect("/signin");
-
-  const login = session.login || session.user.name || "";
+  const { login, orgs } = await pageMember();
 
   // The keys this account has saved, so a scan can name which one pays.
-  const tenant = await resolveTenant(memberScopes(session));
-  const settings = tenant.current
-    ? await installationForDisplay(tenant.current.org)
-    : null;
-  const aiKeys = (settings?.aiKeys ?? []).map((entry) => ({
-    id: entry.id,
-    label: entry.label,
-    model: entry.model,
-  }));
+  const tenant = await resolveTenant({ login, orgs });
+  const aiKeys = tenant.current ? await aiKeyOptions(tenant.current.org) : [];
 
   const [rows, total] = await Promise.all([
     db.scans()

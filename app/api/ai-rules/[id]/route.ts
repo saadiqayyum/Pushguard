@@ -1,23 +1,16 @@
 import { NextResponse } from "next/server"
-import { memberScopes, requireUser } from "@/lib/auth"
 import { db } from "@/lib/db"
 import { AppError } from "@/lib/errors"
 import { logger } from "@/lib/logger"
 import { withErrorHandler } from "@/lib/route"
-import { resolveTenant } from "@/lib/tenant"
+import { requireManagedTenant } from "@/lib/tenant"
 import { aiRuleSchema } from "@/schemas/ai-rule"
 
-async function requireOwner(): Promise<{ owner: string; login: string }> {
-  const user = await requireUser()
-  const tenant = await resolveTenant(memberScopes(user))
-  if (!tenant.current) throw new AppError("forbidden", "No Pushguard installation for this account")
-  return { owner: tenant.current.installedBy, login: user.login }
-}
 
 export const PATCH = withErrorHandler("/api/ai-rules/[id]", async (request, { params }) => {
   const { id } = await params
   const rule = aiRuleSchema.parse(await request.json())
-  const { owner, login } = await requireOwner()
+  const { owner, login } = await requireManagedTenant()
 
   if (rule.id !== id) {
     throw new AppError("validation_failed", "Rule id cannot be changed; duplicate it instead")
@@ -35,7 +28,7 @@ export const PATCH = withErrorHandler("/api/ai-rules/[id]", async (request, { pa
 
 export const DELETE = withErrorHandler("/api/ai-rules/[id]", async (_request, { params }) => {
   const { id } = await params
-  const { owner, login } = await requireOwner()
+  const { owner, login } = await requireManagedTenant()
 
   const result = await db.aiRules().deleteOne({ owner, ruleId: id })
   if (result.deletedCount === 0) throw new AppError("not_found", "Rule not found")

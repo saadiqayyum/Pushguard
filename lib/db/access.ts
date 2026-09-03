@@ -91,6 +91,11 @@ export async function accessibleRepos(login: string, installationId?: number): P
   return rows.map((row) => row.repo).sort()
 }
 
+// Installations that cover at least one repository this user may read.
+export async function accessibleInstallationIds(login: string): Promise<number[]> {
+  return repoAccess().distinct("installationId", { login: login.toLowerCase() })
+}
+
 export async function canReadRepo(login: string, repo: string): Promise<boolean> {
   return (await repoAccess().countDocuments({ _id: accessId(login, repo) }, { limit: 1 })) > 0
 }

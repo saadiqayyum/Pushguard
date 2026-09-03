@@ -1,21 +1,19 @@
 import Link from "next/link"
-import { notFound, redirect } from "next/navigation"
+import { notFound } from "next/navigation"
 import { ScanReport } from "@/components/scan-panel"
-import { auth } from "@/lib/auth"
-import { db, serializeScan } from "@/lib/db"
+import { pageMember } from "@/lib/auth"
+import { serializeScan } from "@/lib/db"
 import { installUrl } from "@/lib/install-url"
-import { canReadScan } from "@/lib/scan"
+import { readableScan } from "@/lib/scan"
 import { formatTimestamp } from "@/lib/format"
 
 export const dynamic = "force-dynamic"
 
 export default async function ScanDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
-  const session = await auth()
-  if (!session?.user) redirect("/signin")
-
-  const scan = await db.scans().findOne({ _id: id })
-  if (!scan || !canReadScan(scan, session.login ?? null)) notFound()
+  const { login } = await pageMember()
+  const scan = await readableScan(id, login)
+  if (!scan) notFound()
 
   return (
     <div className="mx-auto w-full max-w-5xl px-4 sm:px-6 lg:px-8 space-y-6">

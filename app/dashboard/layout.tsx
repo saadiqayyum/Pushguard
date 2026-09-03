@@ -1,29 +1,28 @@
-import { redirect } from "next/navigation"
 import { InstallPrompt } from "@/components/install-prompt"
 import { TopNav } from "@/components/site-chrome"
 import { UserMenu } from "@/components/user-menu"
-import { auth, memberScopes } from "@/lib/auth"
+import { pageMember } from "@/lib/auth"
 import { resolveTenant } from "@/lib/tenant"
 
 const NAV = [
   { href: "/dashboard", label: "Alerts" },
   { href: "/dashboard/scans", label: "Scans" },
+]
+const MANAGER_NAV = [
   { href: "/dashboard/rules", label: "Rules" },
   { href: "/dashboard/ai", label: "AI" },
 ]
 
 // The dashboard wears the same top bar as the rest of the site.
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const session = await auth()
-  if (!session?.user) redirect("/signin")
-
-  const login = session.login || session.user.name || ""
-  const tenant = await resolveTenant(memberScopes({ login, orgs: session.orgs ?? [] }))
+  const member = await pageMember()
+  const tenant = await resolveTenant(member)
+  const links = tenant.manages ? [...NAV, ...MANAGER_NAV] : NAV
 
   return (
     <div className="site flex min-h-screen flex-col">
-      <TopNav links={tenant.current ? NAV : []}>
-        <UserMenu login={login} />
+      <TopNav links={tenant.current ? links : []}>
+        <UserMenu login={member.login} />
       </TopNav>
 
       <main className="flex-1 py-8">

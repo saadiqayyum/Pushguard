@@ -1,22 +1,15 @@
 import { NextResponse } from "next/server"
-import { memberScopes, requireUser } from "@/lib/auth"
 import { db } from "@/lib/db"
 import { AppError } from "@/lib/errors"
 import { logger } from "@/lib/logger"
 import { withErrorHandler } from "@/lib/route"
-import { resolveTenant } from "@/lib/tenant"
+import { requireManagedTenant } from "@/lib/tenant"
 import { aiRuleSchema, MAX_AI_RULES_PER_ACCOUNT } from "@/schemas/ai-rule"
 
-async function requireOwner(): Promise<{ owner: string; login: string }> {
-  const user = await requireUser()
-  const tenant = await resolveTenant(memberScopes(user))
-  if (!tenant.current) throw new AppError("forbidden", "No Pushguard installation for this account")
-  return { owner: tenant.current.installedBy, login: user.login }
-}
 
 export const POST = withErrorHandler("/api/ai-rules", async (request) => {
   const rule = aiRuleSchema.parse(await request.json())
-  const { owner, login } = await requireOwner()
+  const { owner, login } = await requireManagedTenant()
   const now = new Date()
 
   const existing = await db.aiRules().findOne({ owner, ruleId: rule.id })

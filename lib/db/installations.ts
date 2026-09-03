@@ -46,6 +46,12 @@ export function activeInstallation(org: string): Promise<InstallationDoc | null>
   return installations().findOne({ org, active: true })
 }
 
+// What a scan or rule picker needs to name a key: no hint, no provider.
+export async function aiKeyOptions(org: string): Promise<{ id: string; label: string; model: string }[]> {
+  const doc = await installationForDisplay(org)
+  return (doc?.aiKeys ?? []).map(({ id, label, model }) => ({ id, label, model }))
+}
+
 // The installation as a page or an API response may see it.
 export async function installationForDisplay(
   org: string,

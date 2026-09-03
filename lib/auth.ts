@@ -2,6 +2,7 @@ import NextAuth from "next-auth"
 import { getToken } from "next-auth/jwt"
 import GitHub from "next-auth/providers/github"
 import { cookies, headers } from "next/headers"
+import { redirect } from "next/navigation"
 import { AppError } from "@/lib/errors"
 import { fetchUserOrgs } from "@/lib/github"
 import { logger } from "@/lib/logger"
@@ -50,15 +51,23 @@ export function memberScopes(member: { login: string; orgs: string[] }): string[
   return [member.login, ...member.orgs].filter(Boolean)
 }
 
-export async function requireUser(): Promise<Member> {
+async function currentMember(): Promise<Member | null> {
   const session = await auth()
-  if (!session?.user) throw new AppError("unauthorized", "Sign in required")
-  return { login: session.login || (session.user.name ?? "unknown"), orgs: session.orgs ?? [] }
+  if (!session?.user) return null
+  return { login: session.login || session.user.name || "", orgs: session.orgs ?? [] }
 }
 
-export async function requireMember(org: string): Promise<Member> {
-  const member = await requireUser()
-  if (!memberScopes(member).includes(org)) throw new AppError("forbidden", `Not a member of ${org}`)
+// Route variant: throws, and withErrorHandler turns it into a 401.
+export async function requireUser(): Promise<Member> {
+  const member = await currentMember()
+  if (!member) throw new AppError("unauthorized", "Sign in required")
+  return member
+}
+
+// Page variant: sends the visitor to sign in.
+export async function pageMember(): Promise<Member> {
+  const member = await currentMember()
+  if (!member) redirect("/signin")
   return member
 }
 

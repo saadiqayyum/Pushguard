@@ -1,11 +1,11 @@
 import Link from "next/link"
 import { ChevronLeft, ExternalLink } from "lucide-react"
-import { notFound, redirect } from "next/navigation"
+import { notFound } from "next/navigation"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { alertHeadline, collapseLines } from "@/lib/alert-display"
 import { SeverityBadge } from "@/components/severity-badge"
-import { auth } from "@/lib/auth"
+import { pageMember } from "@/lib/auth"
 import { alertDetail } from "@/lib/db"
 import { formatTimestamp } from "@/lib/format"
 
@@ -14,13 +14,11 @@ export const dynamic = "force-dynamic"
 // One alert, in full. `/dashboard/alerts/owner/repo/12`.
 export default async function AlertPage({ params }: { params: Promise<{ ref: string[] }> }) {
   const { ref } = await params
-  const session = await auth()
-  if (!session?.user) redirect("/signin")
+  const { login } = await pageMember()
 
   const number = Number(ref[2])
   if (ref.length !== 3 || !Number.isInteger(number)) notFound()
 
-  const login = session.login || session.user.name || ""
   const alert = await alertDetail(login, `${ref[0]}/${ref[1]}`, number)
   if (!alert) notFound()
 

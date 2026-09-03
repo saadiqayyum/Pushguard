@@ -1,10 +1,8 @@
 import { stringify } from "yaml"
-import { memberScopes, requireUser } from "@/lib/auth"
 import { db } from "@/lib/db"
 import { catalogRules } from "@/lib/rules/catalog"
-import { AppError } from "@/lib/errors"
 import { withErrorHandler } from "@/lib/route"
-import { resolveTenant } from "@/lib/tenant"
+import { requireManagedTenant } from "@/lib/tenant"
 import type { Rule } from "@/schemas/rule"
 
 const HEADER = [
@@ -26,11 +24,9 @@ export const GET = withErrorHandler("/api/rules/export", async (request) => {
   let filename = "pushguard-rules.example.yaml"
 
   if (!example) {
-    const user = await requireUser()
-    const tenant = await resolveTenant(memberScopes(user))
-    if (!tenant.current) throw new AppError("forbidden", "No Pushguard installation for this account")
+    const { owner } = await requireManagedTenant()
     const docs = await db.rules()
-      .find({ owner: tenant.current.installedBy })
+      .find({ owner })
       .sort({ ruleId: 1 })
       .toArray()
     rules = docs.map((doc) => doc.body)

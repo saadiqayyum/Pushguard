@@ -1,10 +1,10 @@
 import { redirect } from "next/navigation"
 import { RulesView } from "@/components/rules-view"
 import type { RuleRow } from "@/components/rule-types"
-import { auth, memberScopes } from "@/lib/auth"
+import { pageMember } from "@/lib/auth"
 import { resolveRules, serializeResolvedRule } from "@/lib/rules"
 import { catalogRules, PACKS } from "@/lib/rules/catalog"
-import { db, installationForDisplay } from "@/lib/db"
+import { aiKeyOptions, db } from "@/lib/db"
 import { aiRuleSchema } from "@/schemas/ai-rule"
 import { parsePaging } from "@/lib/paging"
 import { resolveTenant } from "@/lib/tenant"
@@ -32,18 +32,11 @@ export default async function RulesPage({
   searchParams: Promise<{ page?: string }>
 }) {
   const paging = parsePaging(await searchParams)
-  const session = await auth()
-  if (!session?.user) redirect("/signin")
-
-  const tenant = await resolveTenant(memberScopes({ login: session.login ?? "", orgs: session.orgs ?? [] }))
+  const tenant = await resolveTenant(await pageMember())
   if (!tenant.current) return null
+  if (!tenant.manages) redirect("/dashboard")
 
-  const installation = await installationForDisplay(tenant.current.org)
-  const aiKeys = (installation?.aiKeys ?? []).map((key) => ({
-    id: key.id,
-    label: key.label,
-    model: key.model,
-  }))
+  const aiKeys = await aiKeyOptions(tenant.current.org)
 
   let rows: RuleRow[] = []
   let total = 0

@@ -1,26 +1,18 @@
 import { NextResponse } from "next/server"
-import { memberScopes, requireUser } from "@/lib/auth"
 import { db } from "@/lib/db"
 import { AppError } from "@/lib/errors"
 import { logger } from "@/lib/logger"
 import { catalogById } from "@/lib/rules/catalog"
 import { clearOverride, resolveRules, serializeResolvedRule, upsertOverride } from "@/lib/rules"
 import { withErrorHandler } from "@/lib/route"
-import { resolveTenant } from "@/lib/tenant"
+import { requireManagedTenant } from "@/lib/tenant"
 import { updateRuleBody } from "@/schemas/api"
 
-// `id` here is the rule's own id, not a database id. Most rules live in the.
-async function requireRuleOwner(): Promise<{ owner: string; login: string }> {
-  const user = await requireUser()
-  const tenant = await resolveTenant(memberScopes(user))
-  if (!tenant.current) throw new AppError("forbidden", "No Pushguard installation for this account")
-  return { owner: tenant.current.installedBy, login: user.login }
-}
 
 export const PATCH = withErrorHandler("/api/rules/[id]", async (request, { params }) => {
   const { id } = await params
   const body = updateRuleBody.parse(await request.json())
-  const { owner, login } = await requireRuleOwner()
+  const { owner, login } = await requireManagedTenant()
 
   const current = (await resolveRules(owner)).find((rule) => rule.id === id)
   if (!current) throw new AppError("not_found", "Rule not found")
@@ -58,7 +50,7 @@ export const PATCH = withErrorHandler("/api/rules/[id]", async (request, { param
 // For a rule somebody wrote, the override *is* the rule and this removes it.
 export const DELETE = withErrorHandler("/api/rules/[id]", async (_request, { params }) => {
   const { id } = await params
-  const { owner, login } = await requireRuleOwner()
+  const { owner, login } = await requireManagedTenant()
 
   const cleared = await clearOverride(owner, id)
   if (!cleared) throw new AppError("not_found", "No change to undo for that rule")
