@@ -120,6 +120,7 @@ export async function renameRepoProjections(from: string, to: string): Promise<v
     (doc) => `${(doc.login as string).toLowerCase()}\0${to.toLowerCase()}`,
   )
   await rekeyByRepo("alerts", from, to, (doc) => `${to}#${doc.number as number}`)
+  await rekeyByRepo("pull_requests", from, to, (doc) => `${to}#${doc.number as number}`)
   await rawDb().collection("review_sessions").updateMany({ repo: from }, { $set: { repo: to } })
 }
 
@@ -132,6 +133,7 @@ export async function purgeRepoProjections(repoNames: string[]): Promise<void> {
     db.collection<{ _id: string }>("repos").deleteMany({ _id: { $in: repoNames } }),
     db.collection("repo_access").deleteMany({ repo: { $in: repoNames } }),
     db.collection("push_actors").deleteMany({ repo: { $in: repoNames } }),
+    db.collection("pull_requests").deleteMany({ repo: { $in: repoNames } }),
   ])
 }
 
@@ -142,5 +144,6 @@ export async function purgeOrgProjections(org: string): Promise<void> {
     db.collection("repos").deleteMany({ org }),
     db.collection("repo_access").deleteMany({ org }),
     db.collection("push_actors").deleteMany({ repo: { $regex: prefix } }),
+    db.collection("pull_requests").deleteMany({ org }),
   ])
 }

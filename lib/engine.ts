@@ -4,7 +4,11 @@ import type { ChangeType, Rule } from "@/schemas/rule";
 
 export type ChangedFile = { path: string; changeType: ChangeType };
 
+export type ChangeSource = "push" | "pull_request";
+
 export type PushContext = {
+  event?: ChangeSource;
+  pullRequest?: { number: number; base: string; draft: boolean; opened: boolean };
   repo: string;
   branch: string;
   forced: boolean;
@@ -53,6 +57,7 @@ export function evaluateRule(
   rule: Rule,
   context: PushContext,
 ): RuleMatch | null {
+  if (!runsOn(rule, context)) return null;
   if (rule.repos && !matchesAny(rule.repos, context.repo)) return null;
   if (rule.branches && !matchesAny(rule.branches, context.branch)) return null;
   if (rule.when && !matchesWhen(rule.when, context)) return null;
@@ -86,12 +91,28 @@ export function evaluateRule(
   return { rule, matchedFiles, matchedMessages, needsDiff };
 }
 
+// A rule runs on pushes unless it says otherwise. `base_branches` is a pull
+// request fact, so asking for it on a push is a miss, not a wildcard.
+export function runsOn(
+  rule: Pick<Rule, "on" | "base_branches">,
+  context: Pick<PushContext, "event" | "pullRequest">,
+): boolean {
+  const event = context.event ?? "push";
+  if (!(rule.on ?? ["push"]).includes(event)) return false;
+  if (rule.base_branches) {
+    if (!context.pullRequest) return false;
+    if (!matchesAny(rule.base_branches, context.pullRequest.base)) return false;
+  }
+  return true;
+}
+
 // A scan reads committed code, not a push event. Rules that ask about the push.
 export function scannableRules(rules: Rule[]): Rule[] {
   return rules
     .filter(
       (rule) =>
         !rule.when &&
+        runsOn(rule, {}) &&
         (rule.paths ||
           rule.all_of ||
           rule.added_lines ||
@@ -107,6 +128,7 @@ export function erasureRules(rules: Rule[]): Rule[] {
       (rule) =>
         (rule.added_lines || rule.unicode_risk) &&
         !rule.when &&
+        runsOn(rule, {}) &&
         !rule.commit_message,
     );
 }
@@ -264,6 +286,12 @@ export function matchesWhen(
   if (when.unreviewed !== undefined) {
     if (context.unreviewed === null) return false;
     if (when.unreviewed !== context.unreviewed) return false;
+  }
+  if (when.pr_draft !== undefined) {
+    if (!context.pullRequest || when.pr_draft !== context.pullRequest.draft) return false;
+  }
+  if (when.pr_opened !== undefined) {
+    if (!context.pullRequest || when.pr_opened !== context.pullRequest.opened) return false;
   }
   if (when.hour_utc) {
     const inRange = hourInRange(

@@ -4,6 +4,8 @@ import { accessibleRepos, canReadRepo } from "./access"
 import { MAX_ACTIVITY, MAX_COMMENTS, MAX_COMMENT_CHARS, MAX_SIGHTINGS } from "./limits"
 import type { ScanFinding } from "./scans"
 
+export type AlertSource = "push" | "scan" | "pull_request"
+
 export type AlertDoc = {
   _id: string
   repo: string
@@ -24,7 +26,8 @@ export type AlertDoc = {
   }
   activity: { action: string; by: string | null; at: Date }[]
   comments: { id: number; by: string; body: string; at: Date }[]
-  source: "push" | "scan"
+  pullRequest?: { number: number; base: string; url: string }
+  source: AlertSource
   occurrences: number
   sightings?: { at: Date; ruleIds: string[]; sha: string | null; by: string | null }[]
   lastSeenAt: Date
@@ -54,8 +57,10 @@ export function openAlertForRules(repo: string, ruleIds: string[]): Promise<Aler
   )
 }
 
-export async function alertExistsForCommit(repo: string, sha: string): Promise<boolean> {
-  return (await alerts().countDocuments({ repo, "push.after": sha }, { limit: 1 })) > 0
+// Per source: the push to a branch and the pull request carrying the same
+// commit are two events, and each is allowed its own alert.
+export async function alertExistsForCommit(repo: string, sha: string, source: AlertSource): Promise<boolean> {
+  return (await alerts().countDocuments({ repo, "push.after": sha, source }, { limit: 1 })) > 0
 }
 
 export async function recordOccurrence(

@@ -7,6 +7,7 @@ import { resolveTenant } from "@/lib/tenant"
 const NAV = [
   { href: "/dashboard", label: "Alerts" },
   { href: "/dashboard/scans", label: "Scans" },
+  { href: "/dashboard/prs", label: "Pull requests" },
 ]
 const MANAGER_NAV = [
   { href: "/dashboard/rules", label: "Rules" },

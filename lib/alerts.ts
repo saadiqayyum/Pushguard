@@ -28,9 +28,7 @@ import {
 } from "@/lib/github"
 import { logger } from "@/lib/logger"
 import type { Severity } from "@/schemas/rule"
-import type { PushPayload } from "@/schemas/webhook"
-
-const EMPTY_SHA = "0".repeat(40)
+import { EMPTY_SHA, type ChangeEvent } from "@/lib/change-event"
 
 // A diff too big to read is a blind spot, and blind spots are where things get
 // put.
@@ -42,13 +40,13 @@ const TRUNCATED_FINDING = {
 
 // The repeat wording for a push: a reference, not a re-report.
 function buildRepeat(
-  payload: PushPayload,
+  event: ChangeEvent,
   forensics: ForcePushForensics | null,
   extra: ScanFinding[],
   redactContent: boolean,
 ): string {
-  const branch = payload.ref.replace("refs/heads/", "")
-  const lines = [`Seen again on \`${branch}\` by @${payload.sender.login}, ${reviewLink(payload)}`]
+  const where = event.pullRequest ? `pull request #${event.pullRequest.number}` : `\`${event.branch}\``
+  const lines = [`Seen again on ${where} by @${event.sender}, ${reviewLink(event)}`]
 
   if (extra.length > 0) {
     lines.push("", "### Found by analysis on this push", ...findingsMarkdown(extra, redactContent))
@@ -56,13 +54,19 @@ function buildRepeat(
 
   if (forensics) {
     lines.push(
-      ...erasureMarkdown(forensics, payload.repository.full_name, payload.before),
+      ...erasureMarkdown(forensics, event.repo, event.before),
       "",
       "### Rules matched against the erased content",
       ...findingsMarkdown(forensics.findings, redactContent),
     )
   }
   return lines.join("\n")
+}
+
+const SOURCE_LABELS: Record<AlertDoc["source"], string[]> = {
+  push: [],
+  scan: ["scan"],
+  pull_request: ["pull-request"],
 }
 
 export type FiledAlert = { number: number; url: string; threaded: boolean }
@@ -74,12 +78,13 @@ export async function fileOrThreadAlert(input: {
   severity: Severity
   ruleIds: string[]
   findings: ScanFinding[]
-  source: "push" | "scan"
+  source: AlertDoc["source"]
   title: string
   body: string
   repeat: string
   assignees?: string[]
   push?: AlertDoc["push"]
+  pullRequest?: AlertDoc["pullRequest"]
   by?: string
 }): Promise<FiledAlert> {
   const existing = await openAlertForRules(input.target, input.ruleIds)
@@ -111,7 +116,7 @@ export async function fileOrThreadAlert(input: {
     input.target,
     input.title,
     input.body,
-    ["pushguard", `severity:${input.severity}`, ...(input.source === "scan" ? ["scan"] : [])],
+    ["pushguard", `severity:${input.severity}`, ...SOURCE_LABELS[input.source]],
     input.assignees ?? [],
   )
   await recordAlert({
@@ -123,6 +128,7 @@ export async function fileOrThreadAlert(input: {
     ruleIds: input.ruleIds,
     findings: input.findings,
     ...(input.push ? { push: input.push } : {}),
+    ...(input.pullRequest ? { pullRequest: input.pullRequest } : {}),
     source: input.source,
     createdAt: new Date(),
   })
@@ -138,26 +144,26 @@ export async function fileOrThreadAlert(input: {
 // `forensics` is what a force push removed, already matched against the rules.
 export async function processMatches(
   installation: InstallationDoc,
-  payload: PushPayload,
+  event: ChangeEvent,
   matches: RuleMatch[],
   forensics: ForcePushForensics | null = null,
   aiFindings: ScanFinding[] = [],
 ): Promise<void> {
-  const repo = payload.repository.full_name
-  const sha = payload.after
+  const { repo, after: sha } = event
   const { installationId } = installation
+  const source: AlertDoc["source"] = event.pullRequest ? "pull_request" : "push"
 
-  const target = resolveAlertTarget(repo, payload.repository.private)
+  const target = resolveAlertTarget(repo, event.private)
 
-  if (await alertExistsForCommit(target.repo, sha)) {
-    logger.info("alert_deduplicated", { repo, sha })
+  if (await alertExistsForCommit(target.repo, sha, source)) {
+    logger.info("alert_deduplicated", { repo, sha, source })
     return
   }
 
-  const canDiff = payload.before !== EMPTY_SHA && payload.after !== EMPTY_SHA
+  const canDiff = event.before !== EMPTY_SHA && event.after !== EMPTY_SHA
   const needsDiff = matches.some((m) => m.needsDiff) && canDiff
   const diff: CompareResult | null = needsDiff
-    ? await fetchAddedLines(installationId, repo, payload.before, payload.after)
+    ? await fetchAddedLines(installationId, repo, event.before, event.after)
     : null
 
   const confirmed = confirmContentMatches(matches, diff?.addedLines ?? null)
@@ -166,15 +172,12 @@ export async function processMatches(
     return
   }
 
-  const changed = filesIn(payload)
-
   const serious = confirmed.filter(
     (match) => SEVERITY_ORDER.indexOf(match.rule.severity) >= SEVERITY_ORDER.indexOf("high"),
   )
-  
 
   const xray =
-    serious.length > 0 ? await analyseChangedJavaScript(installationId, repo, sha, changed) : []
+    serious.length > 0 ? await analyseChangedJavaScript(installationId, repo, sha, event.files) : []
 
   const findings = [
     ...(diff?.truncated
@@ -204,10 +207,10 @@ export async function processMatches(
     severity,
     ruleIds,
     findings,
-    source: "push",
+    source,
     title: `[${severity}] ${repo}: ${ruleIds.join(", ")}`,
     body: buildBody(
-      payload,
+      event,
       confirmed,
       [...xray, ...aiFindings],
       diff?.truncated ?? false,
@@ -215,26 +218,38 @@ export async function processMatches(
       forensics,
       target.redactContent,
     ),
-    repeat: buildRepeat(payload, forensics, [...xray, ...aiFindings], target.redactContent),
+    repeat: buildRepeat(event, forensics, [...xray, ...aiFindings], target.redactContent),
     assignees: assigneesFor(installation.alertMention),
     push: {
-      branch: payload.ref.replace("refs/heads/", ""),
-      sender: payload.sender.login,
-      pusherEmail: payload.pusher.email ?? null,
-      before: payload.before,
-      after: payload.after,
-      forced: payload.forced,
+      branch: event.branch,
+      sender: event.sender,
+      pusherEmail: event.senderEmail,
+      before: event.before,
+      after: event.after,
+      forced: event.forced,
     },
+    ...(event.pullRequest
+      ? { pullRequest: { number: event.pullRequest.number, base: event.pullRequest.base, url: event.pullRequest.url } }
+      : {}),
   })
   logger.info("push_alert_filed", {
     repo,
     target: target.repo,
     sha,
+    source,
     issue: filed.number,
     threaded: filed.threaded,
     erased: forensics?.erasedCommitCount ?? 0,
   })
 
+  if (event.pullRequest && !filed.threaded && target.repo === repo) {
+    await commentOnIssue(
+      installationId,
+      repo,
+      event.pullRequest.number,
+      `Pushguard flagged this pull request. See #${filed.number} for the ${severity} finding${ruleIds.length === 1 ? "" : "s"}: \`${ruleIds.join("\`, \`")}\`.`,
+    )
+  }
 }
 
 // Put the alert on someone's "Assigned to you" list. Only a user handle can be.
@@ -244,28 +259,14 @@ export function assigneesFor(alertMention: string | null): string[] {
   return handle.includes("/") ? [] : [handle]
 }
 
-// The files a push touched, in the shape the analyser wants.
-function filesIn(payload: PushPayload) {
-  const seen = new Map<string, "added" | "modified" | "removed">();
-  for (const commit of payload.commits) {
-    for (const path of commit.added) seen.set(path, "added");
-    for (const path of commit.modified) if (!seen.has(path)) seen.set(path, "modified");
-    for (const path of commit.removed) seen.set(path, "removed");
-  }
-  return [...seen.entries()].map(([path, changeType]) => ({ path, changeType }));
-}
-
 // A compare against the empty SHA 404s on GitHub, which is exactly the case on.
-function reviewLink(payload: PushPayload): string {
-  return compareLink(
-    payload.repository.full_name,
-    payload.before === EMPTY_SHA ? null : payload.before,
-    payload.after,
-  )
+function reviewLink(event: ChangeEvent): string {
+  if (event.pullRequest) return `${event.pullRequest.url}/files`
+  return compareLink(event.repo, event.before === EMPTY_SHA ? null : event.before, event.after)
 }
 
 function buildBody(
-  payload: PushPayload,
+  event: ChangeEvent,
   matches: ConfirmedMatch[],
   extra: ScanFinding[],
   truncated: boolean,
@@ -273,18 +274,27 @@ function buildBody(
   forensics?: ForcePushForensics | null,
   redactContent = false,
 ): string {
-  const branch = payload.ref.replace("refs/heads/", "")
+  const what = event.pullRequest ? "pull request" : "push"
   const lines = [
-    mention ? `${mention}, flagged push requires review.` : "Flagged push requires review.",
+    mention ? `${mention}, flagged ${what} requires review.` : `Flagged ${what} requires review.`,
     "",
     "| | |",
     "|---|---|",
-    `| Repository | ${payload.repository.full_name} |`,
-    `| Branch | ${branch} |`,
-    `| Pushed by | @${payload.sender.login} (${payload.pusher.email ?? "no email"}) |`,
-    `| Force push | ${payload.forced ? "yes" : "no"} |`,
-    `| Before | ${payload.before === EMPTY_SHA ? ", (branch created)" : payload.before} |`,
-    `| After | ${payload.after} |`,
+    `| Repository | ${event.repo} |`,
+    ...(event.pullRequest
+      ? [
+          `| Pull request | #${event.pullRequest.number} (${event.pullRequest.url}) |`,
+          `| Into | ${event.pullRequest.base} |`,
+          `| From | ${event.branch} |`,
+          `| Opened by | @${event.sender} |`,
+        ]
+      : [
+          `| Branch | ${event.branch} |`,
+          `| Pushed by | @${event.sender} (${event.senderEmail ?? "no email"}) |`,
+          `| Force push | ${event.forced ? "yes" : "no"} |`,
+        ]),
+    `| Before | ${event.before === EMPTY_SHA ? ", (branch created)" : event.before} |`,
+    `| After | ${event.after} |`,
   ]
   if (matches.length > 0) {
     lines.push(
@@ -292,7 +302,7 @@ function buildBody(
       "### Matched rules",
       ...findingsMarkdown(
         matches.map((m) =>
-          toFinding(m.rule, payload.repository.full_name, m.matchedFiles, [
+          toFinding(m.rule, event.repo, m.matchedFiles, [
             ...m.matchedMessages,
             ...m.matchedLines,
           ]),
@@ -303,7 +313,7 @@ function buildBody(
   }
   if (forensics) {
     lines.push(
-      ...erasureMarkdown(forensics, payload.repository.full_name, payload.before),
+      ...erasureMarkdown(forensics, event.repo, event.before),
       "",
       "### Rules matched against the erased content",
       ...findingsMarkdown(forensics.findings, redactContent),
@@ -320,9 +330,9 @@ function buildBody(
       "Review the full compare on GitHub.",
     )
   }
-  if (payload.before === EMPTY_SHA) {
+  if (event.before === EMPTY_SHA) {
     lines.push("", "Branch had no previous head, so content rules were reported without diff confirmation.")
   }
-  lines.push("", reviewLink(payload))
+  lines.push("", reviewLink(event))
   return lines.join("\n")
 }

@@ -17,6 +17,20 @@
 # Severity -> action: critical/high = issue + team mention (emails),
 # medium = issue, low = issue for digest triage.
 
+# Pull requests. `on` picks the events a rule runs for; absent means pushes
+# only. A pull request is evaluated as a whole, base...head, every time it
+# changes, and repeats thread onto the same alert. The alert is an issue; the
+# pull request gets a comment pointing at it.
+- id: example-pull-request
+  description: Workflow changes proposed against a release branch
+  severity: high
+  on: [pull_request]
+  base_branches: [main, "release/*"]
+  paths: [".github/workflows/**"]
+  when:
+    pr_draft: false         # skip drafts
+    # pr_opened: true       # only when first opened, not on every push to it
+
 # Push conditions. None of these can be answered by a scan, which reads
 # committed code and knows nothing about the push that delivered it.
 - id: example-push-conditions

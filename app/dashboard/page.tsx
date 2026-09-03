@@ -42,6 +42,7 @@ export default async function AlertsPage({
     archived: alert.archivedAt !== null,
     occurrences: alert.occurrences ?? 1,
     branch: alert.push?.branch ?? null,
+    pullRequest: alert.pullRequest?.number ?? null,
     createdAt: alert.createdAt.toISOString(),
   }));
 

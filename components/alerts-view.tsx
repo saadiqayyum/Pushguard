@@ -34,6 +34,7 @@ export type AlertRow = {
   archived: boolean;
   occurrences: number;
   branch: string | null;
+  pullRequest: number | null;
   createdAt: string;
 };
 
@@ -213,7 +214,7 @@ export function AlertsView({
                 {alert.repo}#{alert.number}
               </TableCell>
               <TableCell className="hidden font-mono text-xs whitespace-nowrap text-muted-foreground lg:table-cell">
-                {alert.branch ?? "—"}
+                {alert.pullRequest ? `PR #${alert.pullRequest}` : (alert.branch ?? "—")}
               </TableCell>
               <TableCell className="hidden text-xs text-muted-foreground lg:table-cell">
                 {alert.assignees.length > 0

@@ -3,6 +3,9 @@ import { z } from "zod";
 export const SEVERITIES = ["low", "medium", "high", "critical"] as const;
 export const CHANGE_TYPES = ["added", "modified", "removed"] as const;
 
+// Events a rule runs on. Absent means push only.
+export const CHANGE_SOURCES = ["push", "pull_request"] as const;
+
 const REGEX_MAX_LENGTH = 500;
 const GLOB_MAX_LENGTH = 256;
 
@@ -43,6 +46,8 @@ export const whenSchema = z
     branch_deleted: z.boolean().optional(),
     author_mismatch: z.boolean().optional(),
     unreviewed: z.boolean().optional(),
+    pr_draft: z.boolean().optional(),
+    pr_opened: z.boolean().optional(),
     hour_utc: hourRange.optional(),
   })
   .strict()
@@ -65,8 +70,10 @@ export const ruleSchema = z
       .optional(),
     severity: z.enum(SEVERITIES),
     enabled: z.boolean().default(true),
+    on: z.array(z.enum(CHANGE_SOURCES)).min(1).max(2).optional(),
     repos: z.array(glob).min(1).max(50).optional(),
     branches: z.array(glob).min(1).max(50).optional(),
+    base_branches: z.array(glob).min(1).max(50).optional(),
     paths: z.array(glob).min(1).max(100).optional(),
     all_of: z.array(z.array(glob).min(1).max(50)).min(2).max(5).optional(),
     exclude_paths: z.array(glob).min(1).max(100).optional(),

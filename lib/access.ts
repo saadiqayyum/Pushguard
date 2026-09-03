@@ -3,6 +3,7 @@ import { MAX_STORED_BRANCHES, repos } from "@/lib/db"
 import { fetchRepoBranches, listRepoCollaborators, listTeamMembers, listTeamRepos } from "@/lib/github"
 import { logger } from "@/lib/logger"
 import { ownerOf } from "@/lib/finding"
+import { syncRepoPullRequests } from "@/lib/pull-requests"
 
 // Keeps the repo-access projection current.
 
@@ -41,9 +42,13 @@ export async function syncRepoBranches(installationId: number, repo: string): Pr
   )
 }
 
-// Everything a repository needs stored: who can read it, and what branches it has.
+// Everything a repository needs stored: who can read it, its branches, its open pull requests.
 async function syncRepo(installationId: number, repo: string): Promise<void> {
-  await Promise.all([syncRepoAccess(installationId, repo), syncRepoBranches(installationId, repo)])
+  await Promise.all([
+    syncRepoAccess(installationId, repo),
+    syncRepoBranches(installationId, repo),
+    syncRepoPullRequests(installationId, repo),
+  ])
 }
 
 // Repositories are synced in small batches. A large installation would otherwise.

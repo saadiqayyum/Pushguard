@@ -380,6 +380,47 @@ export async function listTeamRepos(installationId: number, org: string, teamSlu
   })
 }
 
+export type OpenPullRequest = {
+  number: number
+  title: string
+  author: string
+  headRef: string
+  headSha: string
+  baseRef: string
+  draft: boolean
+  url: string
+  openedAt: Date
+  updatedAt: Date
+}
+
+export async function listOpenPullRequests(
+  installationId: number,
+  repoFullName: string,
+  limit: number,
+): Promise<OpenPullRequest[]> {
+  return github("list pull requests", async () => {
+    const response = await (await client(installationId)).request("GET /repos/{owner}/{repo}/pulls", {
+      ...splitRepo(repoFullName),
+      state: "open",
+      sort: "updated",
+      direction: "desc",
+      per_page: Math.min(limit, 100),
+    })
+    return response.data.slice(0, limit).map((pr) => ({
+      number: pr.number,
+      title: pr.title,
+      author: pr.user?.login ?? "unknown",
+      headRef: pr.head.ref,
+      headSha: pr.head.sha,
+      baseRef: pr.base.ref,
+      draft: pr.draft ?? false,
+      url: pr.html_url,
+      openedAt: new Date(pr.created_at),
+      updatedAt: new Date(pr.updated_at),
+    }))
+  })
+}
+
 export type RepoBranches = {
   branches: string[]
   defaultBranch: string

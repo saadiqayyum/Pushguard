@@ -25,3 +25,7 @@ export const STUCK_AFTER_MS = 5 * 60 * 1000;
 // Rows moved per collection when a repository is renamed. Beyond this the
 // remainder is logged and left behind rather than rewriting a collection.
 export const MAX_RENAME_ROWS = 2_000;
+
+// Open pull requests seeded per repository. Past this the tab shows the newest
+// and the webhook keeps it current from there.
+export const MAX_OPEN_PULL_REQUESTS_PER_REPO = 100;

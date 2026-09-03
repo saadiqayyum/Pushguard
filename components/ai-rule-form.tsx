@@ -40,6 +40,11 @@ const PUSH_CONDITIONS = [
   { field: "unreviewed", label: "No pull request" },
 ] as const satisfies readonly { field: keyof NonNullable<AiRule["when"]>; label: string }[];
 
+const SOURCES = [
+  { value: "push", label: "Pushes" },
+  { value: "pull_request", label: "Pull requests" },
+] as const;
+
 export const BLANK_AI_RULE: AiRule = {
   id: "",
   severity: "high",
@@ -187,6 +192,52 @@ export function AiRuleForm({
             <p className="text-xs text-muted-foreground">
               How many files one run may read. Higher costs more.
             </p>
+          </div>
+        )}
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label>Runs on</Label>
+          <div className="flex flex-wrap gap-2">
+            {SOURCES.map((source) => {
+              const active = (form.on ?? ["push"]).includes(source.value);
+              return (
+                <Button
+                  key={source.value}
+                  type="button"
+                  size="sm"
+                  variant={active ? "default" : "outline"}
+                  onClick={() => {
+                    const current = form.on ?? ["push"];
+                    const next = active
+                      ? current.filter((s) => s !== source.value)
+                      : [...current, source.value].sort();
+                    if (next.length === 0) return;
+                    setForm({
+                      ...form,
+                      on: next.length === 1 && next[0] === "push" ? undefined : next,
+                    });
+                  }}
+                >
+                  {source.label}
+                </Button>
+              );
+            })}
+          </div>
+        </div>
+        {(form.on ?? []).includes("pull_request") && (
+          <div className="space-y-1.5">
+            <Label htmlFor="base-branches">Base branches</Label>
+            <Input
+              id="base-branches"
+              value={(form.base_branches ?? []).join(", ")}
+              placeholder="main, release/*"
+              onChange={(event) => {
+                const globs = event.target.value.split(",").map((s) => s.trim()).filter(Boolean);
+                setForm({ ...form, base_branches: globs.length > 0 ? globs : undefined });
+              }}
+            />
           </div>
         )}
       </div>

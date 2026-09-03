@@ -383,6 +383,21 @@ they should have lost, and it does not expire on its own. Which is why
 `reconcileAccess` re-reads the collaborator lists on the cron rather than
 trusting the event stream forever.
 
+### Pull requests
+
+Open pull requests are a projection like the rest: `pull_requests` is seeded
+per repository at install, upserted by the `pull_request` webhook, and a closed
+or merged one is deleted. The tab reads it through the same `repo_access` gate
+as alerts. The GitHub App must subscribe to the `pull_request` event.
+
+Rules run on pushes unless `on` includes `pull_request`. A pull request is
+evaluated as a whole, `base.sha...head.sha`, on opened, reopened, synchronize
+and ready_for_review, and the alert threads on repeat rather than filing again.
+The alert is an issue as always; the pull request gets one comment pointing at
+it, on first filing only. Dedup by commit is per source: the branch push and
+the pull request carrying the same head are two events. The default keeps
+existing rules push-only, otherwise every commit would fire twice.
+
 ### Issue operations, and which ones mean something
 
 The `issues` event carries twenty actions. Three change what we store, two end

@@ -9,6 +9,8 @@ import {
   syncTeamRepo,
 } from "@/lib/access"
 import { processMatches } from "@/lib/alerts"
+import { changedFilesOf, fromPush } from "@/lib/change-event"
+import { evaluatePullRequest, notePullRequest, shouldEvaluatePullRequest } from "@/lib/pull-requests"
 import { db, activeInstallation, forgetAlert, noteAlertActivity, noteRepo, removeAlertComment, upsertAlertComment, recordAlert, purgeOrgProjections, purgeRepoProjections, recordPushActor, renameRepoProjections } from "@/lib/db"
 import { evaluateRules, needsReviewCheck, type PushContext } from "@/lib/engine"
 import { runAiRules } from "@/lib/ai-rules"
@@ -30,6 +32,7 @@ import {
   membershipPayloadSchema,
   organizationPayloadSchema,
   publicPayloadSchema,
+  pullRequestPayloadSchema,
   refPayloadSchema,
   repositoryPayloadSchema,
   teamRepoPayloadSchema,
@@ -63,6 +66,7 @@ export const POST = withErrorHandler("/api/webhook", async (request) => {
   if (event === "issues" || event === "issue_comment") return handleIssue(raw, event)
   if (event === "public") return handlePublic(raw)
   if (event === "push") return handlePush(raw, request.headers.get("x-github-delivery"))
+  if (event === "pull_request") return handlePullRequest(raw, request.headers.get("x-github-delivery"))
   return new NextResponse(null, { status: 204 })
 })
 
@@ -540,7 +544,7 @@ async function handlePush(raw: string, deliveryId: string | null): Promise<Respo
           context.files,
         )
         if (aiFindings.length > 0) {
-          await processMatches(installation, payload, [], null, aiFindings)
+          await processMatches(installation, fromPush(payload), [], null, aiFindings)
         }
       } catch (error) {
         logger.error("ai_rules_failed", {
@@ -577,7 +581,7 @@ async function handlePush(raw: string, deliveryId: string | null): Promise<Respo
             context,
           )
       if (matches.length === 0 && !forensics && aiFindings.length === 0) return
-      await processMatches(installation, payload, matches, forensics, aiFindings)
+      await processMatches(installation, fromPush(payload), matches, forensics, aiFindings)
     } catch (error) {
       logger.error("alert_processing_failed", {
         deliveryId,
@@ -587,6 +591,33 @@ async function handlePush(raw: string, deliveryId: string | null): Promise<Respo
     }
   })
 
+  return new NextResponse(null, { status: 202 })
+}
+
+async function handlePullRequest(raw: string, deliveryId: string | null): Promise<Response> {
+  const payload = pullRequestPayloadSchema.parse(JSON.parse(raw))
+  const org = payload.repository.owner.login
+  const installation = await activeInstallation(org)
+  if (!installation) return new NextResponse(null, { status: 204 })
+
+  await notePullRequest(payload)
+  logger.info("pull_request_noted", { repo: payload.repository.full_name, number: payload.number, action: payload.action })
+
+  if (payload.sender.type === "Bot" || !shouldEvaluatePullRequest(payload.action)) {
+    return new NextResponse(null, { status: 204 })
+  }
+  after(async () => {
+    try {
+      await evaluatePullRequest(installation, payload, deliveryId)
+    } catch (error) {
+      logger.error("pull_request_evaluation_failed", {
+        deliveryId,
+        repo: payload.repository.full_name,
+        number: payload.number,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  })
   return new NextResponse(null, { status: 202 })
 }
 
@@ -605,13 +636,8 @@ function toContext(
   senderFirstPush: boolean,
   unreviewed: boolean | null,
 ): PushContext {
-  const files = new Map<string, "added" | "modified" | "removed">()
-  for (const commit of payload.commits) {
-    for (const path of commit.added) files.set(path, "added")
-    for (const path of commit.modified) if (!files.has(path)) files.set(path, "modified")
-    for (const path of commit.removed) files.set(path, "removed")
-  }
   return {
+    event: "push",
     repo: payload.repository.full_name,
     branch: payload.ref.replace("refs/heads/", ""),
     forced: payload.forced,
@@ -621,7 +647,7 @@ function toContext(
     authorMismatch: hasAuthorMismatch(payload),
     unreviewed,
     hourUtc: new Date().getUTCHours(),
-    files: [...files.entries()].map(([path, changeType]) => ({ path, changeType })),
+    files: changedFilesOf(payload),
     commitMessages: payload.commits.map((commit) => commit.message).filter(Boolean),
   }
 }

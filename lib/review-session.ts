@@ -15,7 +15,7 @@ import { fetchBlobs, fetchCompareFiles, fetchDependencyChanges } from "@/lib/git
 import { GROUND_RULES, sanitizeSummary } from "@/lib/review-graph"
 import { SOURCE_FILE } from "@/lib/source-files"
 import { MAX_AI_REVIEWS_PER_DAY } from "@/schemas/ai-rule"
-import { matchesWhen } from "@/lib/engine"
+import { matchesWhen, runsOn } from "@/lib/engine"
 import type { ChangedFile, PushContext } from "@/lib/engine"
 
 // One invocation's share. A session that does not finish stays queued and the
@@ -63,7 +63,7 @@ export async function enqueueReviewSession(input: {
   repo: string
   branch: string
   sha: string
-  source: "push" | "scan"
+  source: ReviewSessionDoc["source"]
   rules: ReviewSessionDoc["rules"]
   seeds: string[]
   baseSha?: string
@@ -109,11 +109,13 @@ export async function queueRepositoryRules(
   changed: ChangedFile[],
   baseSha?: string,
   context?: PushContext,
+  source: ReviewSessionDoc["source"] = "push",
 ): Promise<void> {
   const all = await getActiveAiRules(installation.installedBy)
   const wanted = all.filter(
     (rule) =>
       rule.scope === "repository" &&
+      runsOn(rule, context ?? {}) &&
       (!rule.when || (context !== undefined && matchesWhen(rule.when, context))),
   )
   if (wanted.length === 0) return
@@ -128,7 +130,7 @@ export async function queueRepositoryRules(
     repo,
     branch,
     sha,
-    source: "push",
+    source,
     baseSha,
     rules: wanted.map((rule) => ({
       id: rule.id,

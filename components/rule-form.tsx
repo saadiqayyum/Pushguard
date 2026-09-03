@@ -23,13 +23,20 @@ import type { RuleRow } from "@/components/rule-types"
 
 type ChangeType = "added" | "modified" | "removed"
 const CHANGE_TYPES: ChangeType[] = ["added", "modified", "removed"]
+type ChangeSource = "push" | "pull_request"
+const SOURCE_LABELS: { value: ChangeSource; label: string }[] = [
+  { value: "push", label: "Pushes" },
+  { value: "pull_request", label: "Pull requests" },
+]
 
 type FormState = {
   id: string
   description: string
   severity: Severity
   repos: string[]
+  on: ChangeSource[]
   branches: string
+  baseBranches: string
   paths: string
   excludePaths: string
   changeTypes: ChangeType[]
@@ -42,7 +49,9 @@ const INITIAL: FormState = {
   description: "",
   severity: "high",
   repos: [],
+  on: ["push"],
   branches: "",
+  baseBranches: "",
   paths: "",
   excludePaths: "",
   changeTypes: [...CHANGE_TYPES],
@@ -57,7 +66,9 @@ function toForm(rule: Rule): FormState {
     description: rule.description ?? "",
     severity: rule.severity,
     repos: rule.repos ?? [],
+    on: rule.on ?? ["push"],
     branches: (rule.branches ?? []).join("\n"),
+    baseBranches: (rule.base_branches ?? []).join("\n"),
     paths: (rule.paths ?? []).join("\n"),
     excludePaths: (rule.exclude_paths ?? []).join("\n"),
     changeTypes: rule.change_type ?? [...CHANGE_TYPES],
@@ -198,9 +209,37 @@ export function RuleForm({
           />
         </Field>
 
-        <Field label="Branches" hint="globs, one per line, empty = all">
-          <Textarea rows={2} value={form.branches} onChange={(e) => set("branches")(e.target.value)} placeholder={"main\nrelease/*"} />
+        <Field label="Runs on" hint="pushes, pull requests, or both">
+          <div className="flex flex-wrap gap-5 pt-1">
+            {SOURCE_LABELS.map((source) => (
+              <label key={source.value} className="flex items-center gap-2 text-sm">
+                <Switch
+                  checked={form.on.includes(source.value)}
+                  onCheckedChange={(checked) =>
+                    setForm((f) => ({
+                      ...f,
+                      on: checked
+                        ? [...f.on, source.value]
+                        : f.on.filter((s) => s !== source.value),
+                    }))
+                  }
+                />
+                {source.label}
+              </label>
+            ))}
+          </div>
         </Field>
+
+        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+          <Field label="Branches" hint="globs, one per line, empty = all">
+            <Textarea rows={2} value={form.branches} onChange={(e) => set("branches")(e.target.value)} placeholder={"main\nrelease/*"} />
+          </Field>
+          {form.on.includes("pull_request") && (
+            <Field label="Base branches" hint="globs, one per line, empty = all">
+              <Textarea rows={2} value={form.baseBranches} onChange={(e) => set("baseBranches")(e.target.value)} placeholder={"main"} />
+            </Field>
+          )}
+        </div>
 
         <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
           <Field label="Paths" hint="changed-file globs, one per line">
@@ -342,7 +381,17 @@ function buildRule(
 
   assign("description", form.description || undefined)
   assign("repos", form.repos.length > 0 ? form.repos : undefined)
+  assign(
+    "on",
+    form.on.length === 1 && form.on[0] === "push" ? undefined : [...form.on].sort(),
+  )
   assign("branches", splitLines(form.branches).length > 0 ? splitLines(form.branches) : undefined)
+  assign(
+    "base_branches",
+    form.on.includes("pull_request") && splitLines(form.baseBranches).length > 0
+      ? splitLines(form.baseBranches)
+      : undefined,
+  )
   assign("paths", splitLines(form.paths).length > 0 ? splitLines(form.paths) : undefined)
   assign(
     "exclude_paths",
@@ -363,6 +412,9 @@ function buildRule(
 
   if (form.changeTypes.length === 0) {
     return { success: false, error: "change_type: select at least one change type" }
+  }
+  if (form.on.length === 0) {
+    return { success: false, error: "on: pick pushes, pull requests, or both" }
   }
 
   const parsed = ruleSchema.safeParse(candidate)

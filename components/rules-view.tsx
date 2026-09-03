@@ -390,6 +390,7 @@ export function RulesView({
 function conditionSummary(rule: Record<string, unknown>): string {
   const parts: string[] = [];
   if (rule.when) parts.push("payload");
+  if ((rule.on as string[] | undefined)?.includes("pull_request")) parts.push("pull requests");
   if (rule.paths) parts.push(`paths (${(rule.paths as string[]).length})`);
   if (rule.added_lines) parts.push("diff regex");
   if (rule.ai) parts.push("ai review");

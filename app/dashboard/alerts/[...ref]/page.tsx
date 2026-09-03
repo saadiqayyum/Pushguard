@@ -41,7 +41,7 @@ export default async function AlertPage({ params }: { params: Promise<{ ref: str
         <div className="flex flex-wrap items-center gap-2">
           <SeverityBadge severity={alert.severity} />
           <Badge variant={alert.state === "open" ? "default" : "outline"}>{alert.state}</Badge>
-          <span className="text-xs text-muted-foreground">from a {alert.source}</span>
+          <span className="text-xs text-muted-foreground">from a {alert.source.replace("_", " ")}</span>
           {(alert.occurrences ?? 1) > 1 && (
             <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
               seen {alert.occurrences}× · last {formatTimestamp(alert.lastSeenAt)}
@@ -81,6 +81,13 @@ export default async function AlertPage({ params }: { params: Promise<{ ref: str
               @{alert.push.sender}
               {alert.push.pusherEmail && ` (${alert.push.pusherEmail})`}
             </Row>
+            {alert.pullRequest && (
+              <Row label="Pull request">
+                <a href={alert.pullRequest.url} target="_blank" rel="noreferrer" className="underline">
+                  #{alert.pullRequest.number} into {alert.pullRequest.base}
+                </a>
+              </Row>
+            )}
             <Row label="Branch">{alert.push.branch}</Row>
             <Row label="Force push">{alert.push.forced ? "yes" : "no"}</Row>
             {compare && (

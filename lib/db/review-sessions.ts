@@ -13,7 +13,7 @@ export type ReviewSessionDoc = {
   sha: string
   // Re-derives the diff at run time; source is never stored here.
   baseSha?: string
-  source: "push" | "scan"
+  source: "push" | "scan" | "pull_request"
   rules: {
     id: string
     prompt: string

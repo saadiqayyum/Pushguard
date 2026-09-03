@@ -1,5 +1,5 @@
 import { z } from "zod"
-import { SEVERITIES, whenSchema } from "@/schemas/rule"
+import { CHANGE_SOURCES, SEVERITIES, whenSchema } from "@/schemas/rule"
 
 // A rule answered by a model instead of a pattern.
 
@@ -29,8 +29,10 @@ export const aiRuleSchema = z
     when: whenSchema.optional(),
     // Tool calls one repository-scope run may make. Ignored for `changed`.
     budget: z.number().int().min(5).max(120).default(40),
+    on: z.array(z.enum(CHANGE_SOURCES)).min(1).max(2).optional(),
     repos: z.array(glob).min(1).max(50).optional(),
     branches: z.array(glob).min(1).max(50).optional(),
+    base_branches: z.array(glob).min(1).max(50).optional(),
     paths: z.array(glob).min(1).max(100).optional(),
     exclude_paths: z.array(glob).min(1).max(100).optional(),
     key: z.string().uuid().optional(),

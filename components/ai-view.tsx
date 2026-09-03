@@ -283,7 +283,9 @@ function KeyForm({
   onSaved: (key: AiKey) => void;
 }) {
   const [form, setForm] = useState<Draft>(() =>
-    mode.kind === "edit" ? { ...mode.key, apiKey: "", baseUrl: mode.key.baseUrl ?? "" } : BLANK,
+    mode.kind === "edit"
+      ? { ...mode.key, apiKey: "", baseUrl: mode.key.baseUrl ?? "" }
+      : BLANK,
   );
   const [saving, setSaving] = useState(false);
 
@@ -402,13 +404,10 @@ function KeyForm({
           type="url"
           spellCheck={false}
           className="font-mono"
-          placeholder="Leave blank for the provider's own endpoint"
+          placeholder="(Optional)"
           value={form.baseUrl}
           onChange={(event) => set("baseUrl")(event.target.value)}
         />
-        <p className="text-xs text-muted-foreground">
-          For a compatible gateway such as z.ai. Must be https. Triage then runs on this model too.
-        </p>
       </div>
 
       <div className="space-y-1.5">

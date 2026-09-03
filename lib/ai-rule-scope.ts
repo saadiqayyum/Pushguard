@@ -1,7 +1,7 @@
 // Own module so it stays testable: lib/ai-rules.ts pulls in Octokit to read.
 import picomatch from "picomatch"
 import { SOURCE_FILE } from "@/lib/source-files"
-import { matchesWhen } from "@/lib/engine"
+import { matchesWhen, runsOn } from "@/lib/engine"
 import type { AiRule } from "@/schemas/ai-rule"
 import type { ChangedFile, PushContext } from "@/lib/engine"
 
@@ -44,6 +44,7 @@ export function filesForRule(
   // engine drops `when` rules from a scan.
   context?: PushContext,
 ): string[] {
+  if (!runsOn(rule, context ?? {})) return []
   if (rule.repos && !picomatch(rule.repos, { dot: true })(repo)) return []
   if (rule.branches && !picomatch(rule.branches, { dot: true })(branch)) return []
   if (rule.when && (!context || !matchesWhen(rule.when, context))) return []

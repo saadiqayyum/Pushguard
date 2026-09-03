@@ -166,6 +166,31 @@ export const issuePayloadSchema = z.object({
 
 export type IssuePayload = z.infer<typeof issuePayloadSchema>;
 
+// Only what the projection and the rules need. `base.sha` is the tip the diff
+// is measured from; GitHub keeps it current as the base branch moves.
+export const pullRequestPayloadSchema = z.object({
+  action: z.string(),
+  number: z.number(),
+  pull_request: z.object({
+    title: z.string().default(""),
+    draft: z.boolean().default(false),
+    html_url: z.string(),
+    created_at: z.string().optional(),
+    updated_at: z.string().optional(),
+    user: z.object({ login: z.string() }),
+    head: z.object({ ref: z.string(), sha: z.string() }),
+    base: z.object({ ref: z.string(), sha: z.string() }),
+  }),
+  repository: z.object({
+    full_name: z.string(),
+    private: z.boolean().default(true),
+    owner: z.object({ login: z.string() }),
+  }),
+  sender: z.object({ login: z.string(), type: z.string().optional() }),
+});
+
+export type PullRequestPayload = z.infer<typeof pullRequestPayloadSchema>;
+
 export const publicPayloadSchema = z.object({
   repository: z.object({
     full_name: z.string(),

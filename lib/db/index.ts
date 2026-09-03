@@ -9,6 +9,7 @@ export * from "./scans"
 export * from "./ai"
 export * from "./code-index"
 export * from "./review-sessions"
+export * from "./pull-requests"
 
 import * as rulesEntity from "./rules"
 import * as installationsEntity from "./installations"
@@ -19,6 +20,7 @@ import * as scansEntity from "./scans"
 import * as aiEntity from "./ai"
 import * as codeIndexEntity from "./code-index"
 import * as reviewSessionEntity from "./review-sessions"
+import * as pullRequestEntity from "./pull-requests"
 
 // Namespaced so a collection never collides with a local named `repos` or `scans`.
 export const db = {
@@ -36,4 +38,5 @@ export const db = {
   codeIndex: codeIndexEntity.codeIndex,
   indexJobs: codeIndexEntity.indexJobs,
   reviewSessions: reviewSessionEntity.reviewSessions,
+  pullRequests: pullRequestEntity.pullRequests,
 }
