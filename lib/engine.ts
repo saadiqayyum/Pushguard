@@ -1,6 +1,6 @@
 import { hasConfusables } from "anti-trojan-source";
 import picomatch from "picomatch";
-import type { ChangeType, Rule } from "@/schemas/rule";
+import { CHANGE_SOURCES, type ChangeType, type Rule } from "@/schemas/rule";
 
 export type ChangedFile = { path: string; changeType: ChangeType };
 
@@ -93,9 +93,10 @@ export function evaluateRule(
   return { rule, matchedFiles, matchedMessages, needsDiff };
 }
 
-// A rule runs on pushes unless it says otherwise.
+// A rule runs on pushes and pull requests unless `on` narrows it. A pull
+// request from a fork never raises a push event here, so it must be the default.
 export function runsOn(rule: Pick<Rule, "on">, context: Pick<PushContext, "event">): boolean {
-  return (rule.on ?? ["push"]).includes(context.event ?? "push");
+  return (rule.on ?? CHANGE_SOURCES).includes(context.event ?? "push");
 }
 
 // A scan reads committed code, not a push event. Rules that ask about the push.

@@ -17,10 +17,11 @@
 # Severity -> action: critical/high = issue + team mention (emails),
 # medium = issue, low = issue for digest triage.
 
-# Pull requests. `on` picks the events a rule runs for; absent means pushes
-# only. A pull request is evaluated as a whole, base...head, every time it
-# changes, and repeats thread onto the same alert. The alert is an issue; the
-# pull request gets a comment pointing at it. `branches` matches the base.
+# Pull requests. Every rule runs on pushes and on pull requests unless `on`
+# narrows it. A pull request is evaluated as a whole, base...head, every time
+# it changes; a commit the push already flagged attaches to that alert instead
+# of filing again. The pull request gets a comment either way. `branches`
+# matches the base.
 - id: example-pull-request
   description: Workflow changes proposed against a release branch
   severity: high

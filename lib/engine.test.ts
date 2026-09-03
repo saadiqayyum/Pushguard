@@ -32,12 +32,16 @@ const context = (overrides: Partial<PushContext> = {}): PushContext => ({
   ...overrides,
 })
 
-test("rules run on pushes unless `on` says otherwise", () => {
+test("rules run on pushes and pull requests unless `on` narrows them", () => {
   const pr = context({
     event: "pull_request",
     pullRequest: { number: 7, head: "feature", draft: false, opened: true },
   })
-  const pushOnly = ruleSchema.parse({ id: "a", severity: "high", paths: ["package.json"] })
+  const either = ruleSchema.parse({ id: "e", severity: "high", paths: ["package.json"] })
+  assert.ok(evaluateRule(either, context()))
+  assert.ok(evaluateRule(either, pr))
+
+  const pushOnly = ruleSchema.parse({ id: "a", severity: "high", on: ["push"], paths: ["package.json"] })
   assert.ok(evaluateRule(pushOnly, context()))
   assert.equal(evaluateRule(pushOnly, pr), null)
 

@@ -44,6 +44,7 @@ const SOURCES = [
   { value: "push", label: "Pushes" },
   { value: "pull_request", label: "Pull requests" },
 ] as const;
+const ALL_SOURCES: NonNullable<AiRule["on"]> = SOURCES.map((source) => source.value);
 
 export const BLANK_AI_RULE: AiRule = {
   id: "",
@@ -51,7 +52,6 @@ export const BLANK_AI_RULE: AiRule = {
   enabled: true,
   prompt: "",
   scope: "changed",
-  on: ["pull_request", "push"],
   budget: 40,
 };
 
@@ -202,7 +202,7 @@ export function AiRuleForm({
           <Label>Runs on</Label>
           <div className="flex flex-wrap gap-2">
             {SOURCES.map((source) => {
-              const active = (form.on ?? ["push"]).includes(source.value);
+              const active = (form.on ?? ALL_SOURCES).includes(source.value);
               return (
                 <Button
                   key={source.value}
@@ -210,15 +210,12 @@ export function AiRuleForm({
                   size="sm"
                   variant={active ? "default" : "outline"}
                   onClick={() => {
-                    const current = form.on ?? ["push"];
+                    const current = form.on ?? ALL_SOURCES;
                     const next = active
                       ? current.filter((s) => s !== source.value)
-                      : [...current, source.value].sort();
+                      : [...current, source.value];
                     if (next.length === 0) return;
-                    setForm({
-                      ...form,
-                      on: next.length === 1 && next[0] === "push" ? undefined : next,
-                    });
+                    setForm({ ...form, on: next.length === ALL_SOURCES.length ? undefined : next });
                   }}
                 >
                   {source.label}

@@ -57,10 +57,35 @@ export function openAlertForRules(repo: string, ruleIds: string[]): Promise<Aler
   )
 }
 
-// Per source: the push to a branch and the pull request carrying the same
-// commit are two events, and each is allowed its own alert.
-export async function alertExistsForCommit(repo: string, sha: string, source: AlertSource): Promise<boolean> {
-  return (await alerts().countDocuments({ repo, "push.after": sha, source }, { limit: 1 })) > 0
+export function alertForCommit(repo: string, sha: string): Promise<AlertDoc | null> {
+  return alerts().findOne({ repo, "push.after": sha })
+}
+
+// A pull request carrying a commit the push already flagged joins that alert.
+// Returns false when this pull request was already on it.
+export async function attachPullRequest(
+  id: string,
+  pullRequest: NonNullable<AlertDoc["pullRequest"]>,
+): Promise<boolean> {
+  const result = await alerts().updateOne(
+    {
+      _id: id,
+      "pullRequest.number": { $ne: pullRequest.number },
+      "sightings.pullRequest": { $ne: pullRequest.number },
+    },
+    {
+      $set: { updatedAt: new Date() },
+      $push: {
+        sightings: {
+          $each: [{ at: new Date(), ruleIds: [], sha: null, by: null, pullRequest: pullRequest.number }],
+          $slice: -MAX_SIGHTINGS,
+        },
+      },
+    },
+  )
+  if (result.matchedCount === 0) return false
+  await alerts().updateOne({ _id: id, pullRequest: { $exists: false } }, { $set: { pullRequest } })
+  return true
 }
 
 export async function recordOccurrence(

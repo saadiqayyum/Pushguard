@@ -3,7 +3,7 @@ import { z } from "zod";
 export const SEVERITIES = ["low", "medium", "high", "critical"] as const;
 export const CHANGE_TYPES = ["added", "modified", "removed"] as const;
 
-// Events a rule runs on. Absent means push only.
+// Events a rule runs on. Absent means both.
 export const CHANGE_SOURCES = ["push", "pull_request"] as const;
 
 const REGEX_MAX_LENGTH = 500;

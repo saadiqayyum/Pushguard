@@ -48,7 +48,7 @@ const INITIAL: FormState = {
   description: "",
   severity: "high",
   repos: [],
-  on: ["push"],
+  on: ["push", "pull_request"],
   branches: "",
   paths: "",
   excludePaths: "",
@@ -64,7 +64,7 @@ function toForm(rule: Rule): FormState {
     description: rule.description ?? "",
     severity: rule.severity,
     repos: rule.repos ?? [],
-    on: rule.on ?? ["push"],
+    on: rule.on ?? ["push", "pull_request"],
     branches: (rule.branches ?? []).join("\n"),
     paths: (rule.paths ?? []).join("\n"),
     excludePaths: (rule.exclude_paths ?? []).join("\n"),
@@ -371,10 +371,7 @@ function buildRule(
 
   assign("description", form.description || undefined)
   assign("repos", form.repos.length > 0 ? form.repos : undefined)
-  assign(
-    "on",
-    form.on.length === 1 && form.on[0] === "push" ? undefined : [...form.on].sort(),
-  )
+  assign("on", form.on.length === SOURCE_LABELS.length ? undefined : [...form.on])
   assign("branches", splitLines(form.branches).length > 0 ? splitLines(form.branches) : undefined)
   assign("paths", splitLines(form.paths).length > 0 ? splitLines(form.paths) : undefined)
   assign(

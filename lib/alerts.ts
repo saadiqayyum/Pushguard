@@ -10,7 +10,8 @@ import {
 } from "@/lib/finding"
 import { analyseChangedJavaScript } from "@/lib/xray"
 import {
-  alertExistsForCommit,
+  alertForCommit,
+  attachPullRequest,
   openAlertForRules,
   recordAlert,
   recordOccurrence,
@@ -183,8 +184,19 @@ export async function processMatches(
 
   const target = resolveAlertTarget(repo, event.private)
 
-  if (await alertExistsForCommit(target.repo, sha, source)) {
-    logger.info("alert_deduplicated", { repo, sha, source })
+  const already = await alertForCommit(target.repo, sha)
+  if (already) {
+    if (event.pullRequest && (await attachPullRequest(already._id, event.pullRequest))) {
+      await commentOnPullRequest({
+        installationId,
+        target: target.repo,
+        pullRequest: event.pullRequest,
+        issue: already.number,
+        severity: already.severity,
+        ruleIds: already.ruleIds,
+      })
+    }
+    logger.info("alert_deduplicated", { repo, sha, source, issue: already.number })
     return
   }
 
