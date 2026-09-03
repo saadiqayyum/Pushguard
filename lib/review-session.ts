@@ -190,7 +190,7 @@ async function runRule(
     const llm = chatModel(
       credentials.provider,
       credentials.model,
-      { maxTokens: 8000, maxRetries: 1, effort: credentials.effort },
+      { maxTokens: 8000, maxRetries: 1, effort: credentials.effort, baseUrl: credentials.baseUrl },
       credentials.apiKey,
     )
 

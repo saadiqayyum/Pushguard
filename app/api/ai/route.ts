@@ -25,6 +25,7 @@ export const POST = withErrorHandler("/api/ai", async (request) => {
     keyHint: hint(body.apiKey),
     model: body.model,
     effort: body.effort,
+    ...(body.baseUrl ? { baseUrl: body.baseUrl } : {}),
     addedBy: login,
     addedAt: new Date(),
   }
@@ -50,6 +51,7 @@ export const POST = withErrorHandler("/api/ai", async (request) => {
         keyHint: entry.keyHint,
         model: entry.model,
         effort: entry.effort,
+        baseUrl: entry.baseUrl,
       },
     },
     { status: 201 },

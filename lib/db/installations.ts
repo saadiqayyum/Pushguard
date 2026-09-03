@@ -10,6 +10,7 @@ export type PublicAiKey = {
   keyHint: string
   model: string
   effort: "low" | "medium" | "high"
+  baseUrl?: string
 }
 
 export type InstallationDoc = {

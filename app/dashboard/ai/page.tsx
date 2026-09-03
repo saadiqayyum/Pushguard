@@ -21,6 +21,7 @@ export default async function AiPage() {
       keyHint: entry.keyHint,
       model: entry.model,
       effort: entry.effort,
+      baseUrl: entry.baseUrl,
     })),
     defaultKey: doc?.aiDefaultKey ?? null,
     encryptionReady: Boolean(process.env.ENCRYPTION_KEY && process.env.ENCRYPTION_KEY.length >= 32),

@@ -55,6 +55,7 @@ export type AiKey = {
   keyHint: string;
   model: string;
   effort: "low" | "medium" | "high";
+  baseUrl?: string;
 };
 
 export type AiSettings = {
@@ -78,6 +79,7 @@ type Draft = {
   apiKey: string;
   model: string;
   effort: "low" | "medium" | "high";
+  baseUrl: string;
 };
 
 const BLANK: Draft = {
@@ -86,6 +88,7 @@ const BLANK: Draft = {
   apiKey: "",
   model: "claude-haiku-4-5",
   effort: "medium",
+  baseUrl: "",
 };
 
 type Mode = { kind: "create" } | { kind: "edit"; key: AiKey };
@@ -280,7 +283,7 @@ function KeyForm({
   onSaved: (key: AiKey) => void;
 }) {
   const [form, setForm] = useState<Draft>(() =>
-    mode.kind === "edit" ? { ...mode.key, apiKey: "" } : BLANK,
+    mode.kind === "edit" ? { ...mode.key, apiKey: "", baseUrl: mode.key.baseUrl ?? "" } : BLANK,
   );
   const [saving, setSaving] = useState(false);
 
@@ -302,6 +305,7 @@ function KeyForm({
         provider: form.provider,
         model: form.model.trim(),
         effort: form.effort,
+        ...(form.baseUrl.trim() ? { baseUrl: form.baseUrl.trim() } : {}),
         ...(form.apiKey.trim() ? { apiKey: form.apiKey.trim() } : {}),
       };
       const saved =
@@ -389,6 +393,22 @@ function KeyForm({
             </Select>
           </div>
         )}
+      </div>
+
+      <div className="space-y-1.5">
+        <Label htmlFor="base-url">Base URL</Label>
+        <Input
+          id="base-url"
+          type="url"
+          spellCheck={false}
+          className="font-mono"
+          placeholder="Leave blank for the provider's own endpoint"
+          value={form.baseUrl}
+          onChange={(event) => set("baseUrl")(event.target.value)}
+        />
+        <p className="text-xs text-muted-foreground">
+          For a compatible gateway such as z.ai. Must be https. Triage then runs on this model too.
+        </p>
       </div>
 
       <div className="space-y-1.5">

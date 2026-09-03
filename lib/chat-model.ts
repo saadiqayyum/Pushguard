@@ -18,10 +18,11 @@ export function chatModel(
     maxTokens: number;
     maxRetries: number;
     effort?: AiCredentials["effort"];
+    baseUrl?: string;
   },
   apiKey: string,
 ): BaseChatModel {
-  const { maxTokens, maxRetries, effort } = options;
+  const { maxTokens, maxRetries, effort, baseUrl } = options;
 
   switch (provider) {
     case "anthropic":
@@ -30,19 +31,27 @@ export function chatModel(
         apiKey,
         maxTokens,
         maxRetries,
+        anthropicApiUrl: baseUrl,
         // Anthropic-only. Sending either to another provider is a 400.
         ...(effort
           ? { thinking: { type: "adaptive" }, outputConfig: { effort } }
           : {}),
       });
     case "openai":
-      return new ChatOpenAI({ model, apiKey, maxTokens, maxRetries });
+      return new ChatOpenAI({
+        model,
+        apiKey,
+        maxTokens,
+        maxRetries,
+        configuration: baseUrl ? { baseURL: baseUrl } : undefined,
+      });
     case "google-genai":
       return new ChatGoogleGenerativeAI({
         model,
         apiKey,
         maxOutputTokens: maxTokens,
         maxRetries,
+        baseUrl,
       });
   }
 }

@@ -75,15 +75,15 @@ const STRUCTURED = { method: "jsonSchema" } as const
 export async function buildReviewGraph(credentials: AiCredentials) {
   const triageModel = chatModel(
     credentials.provider,
-    TRIAGE_MODEL[credentials.provider],
-    { maxTokens: 1024, maxRetries: MAX_RETRIES },
+    credentials.baseUrl ? credentials.model : TRIAGE_MODEL[credentials.provider],
+    { maxTokens: 1024, maxRetries: MAX_RETRIES, baseUrl: credentials.baseUrl },
     credentials.apiKey,
   ).withStructuredOutput(triageSchema, { name: "triage", ...STRUCTURED })
 
   const deepModel = chatModel(
     credentials.provider,
     credentials.model,
-    { maxTokens: 8000, maxRetries: MAX_RETRIES, effort: credentials.effort },
+    { maxTokens: 8000, maxRetries: MAX_RETRIES, effort: credentials.effort, baseUrl: credentials.baseUrl },
     credentials.apiKey,
   ).withStructuredOutput(deepSchema, { name: "report_findings", ...STRUCTURED })
 

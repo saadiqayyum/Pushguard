@@ -96,6 +96,8 @@ export type CreateRuleBody = z.infer<typeof createRuleBody>
 export type UpdateRuleBody = z.infer<typeof updateRuleBody>
 export type TestRuleBody = z.infer<typeof testRuleBody>
 
+const MAX_BASE_URL_LENGTH = 200
+
 // Adding a key.
 export const addAiKeyBody = z
   .object({
@@ -107,6 +109,8 @@ export const addAiKeyBody = z
     apiKey: z.string().trim().min(16).max(400),
     model: z.string().trim().min(2).max(64),
     effort: z.enum(["low", "medium", "high"]).default("medium"),
+    // https only: the key travels in a header to whatever host this names.
+    baseUrl: z.string().trim().url().max(MAX_BASE_URL_LENGTH).startsWith("https://").optional(),
   })
   .strict()
 

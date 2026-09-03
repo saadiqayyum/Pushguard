@@ -13,6 +13,7 @@ export type AiCredentials = {
   model: string;
   effort: "low" | "medium" | "high";
   label: string;
+  baseUrl?: string;
 };
 
 export function aiCredentials(
@@ -42,5 +43,6 @@ export function aiCredentials(
     model: chosen.model,
     effort: chosen.effort,
     label: chosen.label,
+    baseUrl: chosen.baseUrl,
   };
 }

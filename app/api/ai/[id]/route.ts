@@ -28,8 +28,10 @@ export const PATCH = withErrorHandler("/api/ai/[id]", async (request, { params }
     provider: body.provider,
     model: body.model,
     effort: body.effort,
+    ...(body.baseUrl ? { baseUrl: body.baseUrl } : {}),
     ...(body.apiKey ? { key: seal(body.apiKey), keyHint: hint(body.apiKey) } : {}),
   }
+  if (!body.baseUrl) delete updated.baseUrl
 
   await db.installations().updateOne(
     { org, "aiKeys.id": id },
@@ -45,6 +47,7 @@ export const PATCH = withErrorHandler("/api/ai/[id]", async (request, { params }
       keyHint: updated.keyHint,
       model: updated.model,
       effort: updated.effort,
+      baseUrl: updated.baseUrl,
     },
   })
 })
