@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  allowedDevOrigins: ["saad.local-proxy.win"],
+  serverExternalPackages: ["recheck"],
 };
 
 export default nextConfig;

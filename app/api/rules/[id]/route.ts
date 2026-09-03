@@ -11,7 +11,7 @@ import { updateRuleBody } from "@/schemas/api"
 
 export const PATCH = withErrorHandler("/api/rules/[id]", async (request, { params }) => {
   const { id } = await params
-  const body = updateRuleBody.parse(await request.json())
+  const body = await updateRuleBody.parseAsync(await request.json())
   const { owner, login } = await requireManagedTenant()
 
   const current = (await resolveRules(owner)).find((rule) => rule.id === id)

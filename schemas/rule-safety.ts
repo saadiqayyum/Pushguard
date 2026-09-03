@@ -1,5 +1,6 @@
-import { checkSync } from "recheck"
+import { check } from "recheck"
 import { z } from "zod"
+import { logger } from "@/lib/logger"
 import { ruleSchema, rulesFileSchema, type Rule } from "@/schemas/rule"
 
 // Rules validated for catastrophic backtracking, for the paths that *write* a
@@ -7,18 +8,15 @@ import { ruleSchema, rulesFileSchema, type Rule } from "@/schemas/rule"
 
 const CHECK_TIMEOUT_MS = 5000
 
-// recheck's default sync backend spawns a worker from a path it resolves at
-// call time, which Next's bundled server cannot find. Pure runs in-process.
-if (process.env.NEXT_RUNTIME) process.env.RECHECK_SYNC_BACKEND ??= "pure"
-
 export type RegexVerdict = { ok: true } | { ok: false; reason: string }
 
 // The one field-level decision, exported so both callers and tests share it.
-export function checkRegexSafety(source: string): RegexVerdict {
+export async function checkRegexSafety(source: string): Promise<RegexVerdict> {
   let result
   try {
-    result = checkSync(source, "", { timeout: CHECK_TIMEOUT_MS })
-  } catch {
+    result = await check(source, "", { timeout: CHECK_TIMEOUT_MS })
+  } catch (error) {
+    logger.warn("regex_check_failed", { error: error instanceof Error ? error.message : String(error) })
     return { ok: false, reason: "could not be analysed" }
   }
 
@@ -29,17 +27,22 @@ export function checkRegexSafety(source: string): RegexVerdict {
       reason: `runs in ${result.complexity?.type ?? "super-linear"} time on crafted input, which would hang the scanner and silence detection for that push`,
     }
   }
+  const kind = result.error?.kind ?? "unknown"
+  logger.warn("regex_check_unknown", { kind, length: source.length })
   return {
     ok: false,
-    reason: "was too complex to verify as safe within the time limit; simplify it",
+    reason:
+      kind === "timeout"
+        ? "was too complex to verify as safe within the time limit; simplify it"
+        : `could not be checked (${kind})`,
   }
 }
 
-function refine(rule: Rule, ctx: z.RefinementCtx): void {
+async function refine(rule: Rule, ctx: z.RefinementCtx): Promise<void> {
   for (const field of ["added_lines", "commit_message"] as const) {
     const source = rule[field]
     if (!source) continue
-    const verdict = checkRegexSafety(source)
+    const verdict = await checkRegexSafety(source)
     if (!verdict.ok) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -50,10 +53,10 @@ function refine(rule: Rule, ctx: z.RefinementCtx): void {
   }
 }
 
-// One rule, on its way in.
+// One rule, on its way in. Async: parse with parseAsync or safeParseAsync.
 export const checkedRuleSchema = ruleSchema.superRefine(refine)
 
 // A whole file of them: import, and the repository's own example file.
-export const checkedRulesFileSchema = rulesFileSchema.superRefine((rules, ctx) => {
-  rules.forEach((rule) => refine(rule, ctx))
+export const checkedRulesFileSchema = rulesFileSchema.superRefine(async (rules, ctx) => {
+  for (const rule of rules) await refine(rule, ctx)
 })

@@ -42,7 +42,7 @@ export const GET = withErrorHandler("/api/rules", async (request) => {
 })
 
 export const POST = withErrorHandler("/api/rules", async (request) => {
-  const { rule } = createRuleBody.parse(await request.json())
+  const { rule } = await createRuleBody.parseAsync(await request.json())
   const { owner, login } = await requireManagedTenant()
 
   if (catalogById.has(rule.id)) {

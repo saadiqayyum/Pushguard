@@ -20,7 +20,7 @@ export const POST = withErrorHandler("/api/rules/import", async (request) => {
     throw new AppError("validation_failed", `Could not read the file: ${(error as Error).message}`)
   }
 
-  const rules = checkedRulesFileSchema.parse(parsed)
+  const rules = await checkedRulesFileSchema.parseAsync(parsed)
   if (rules.length === 0) throw new AppError("validation_failed", "No rules in that file")
 
   const versions = db.ruleVersions()

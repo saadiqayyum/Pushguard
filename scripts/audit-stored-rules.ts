@@ -31,7 +31,7 @@ async function main(): Promise<void> {
     for (const field of REGEX_FIELDS) {
       const source = parsed.data[field]
       if (!source) continue
-      const verdict = checkRegexSafety(source)
+      const verdict = await checkRegexSafety(source)
       if (!verdict.ok) {
         unsafe += 1
         console.error(
