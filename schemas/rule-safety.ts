@@ -7,6 +7,10 @@ import { ruleSchema, rulesFileSchema, type Rule } from "@/schemas/rule"
 
 const CHECK_TIMEOUT_MS = 5000
 
+// recheck's default sync backend spawns a worker from a path it resolves at
+// call time, which Next's bundled server cannot find. Pure runs in-process.
+if (process.env.NEXT_RUNTIME) process.env.RECHECK_SYNC_BACKEND ??= "pure"
+
 export type RegexVerdict = { ok: true } | { ok: false; reason: string }
 
 // The one field-level decision, exported so both callers and tests share it.
