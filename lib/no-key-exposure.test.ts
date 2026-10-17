@@ -57,16 +57,18 @@ test("no client component can even name the stored key field", () => {
   }
 })
 
+// Two layers: the app role is granted no sealed column, and the display
+// query never selects one, so neither a policy slip nor a spread leaks it.
 test("the display read excludes the ciphertext at the database", () => {
-  // The projection is what makes this structural: the ciphertext is not in the
-  // process, so it cannot be leaked by a later refactor that spreads the doc.
-  // Read across lib/db rather than one file, so splitting the module does not
-  // quietly turn this guard into a test of a file that no longer holds it.
-  const source = readdirSync("lib/db")
-    .filter((name) => name.endsWith(".ts"))
-    .map((name) => readFileSync(`lib/db/${name}`, "utf8"))
-    .join("\n")
-  assert.ok(source.includes('projection: { "aiKeys.key": 0 }'))
+  const grants = readFileSync("drizzle/0002_grants_and_queue.sql", "utf8")
+  const granted = grants.match(/GRANT SELECT \(([^)]*)\)[^;]*ON app\.ai_keys TO pushguard_app/)?.[1] ?? ""
+  assert.ok(granted.includes("key_hint"))
+  for (const sealed of ["ciphertext", "iv", "tag"]) assert.ok(!granted.split(/,\s*/).includes(sealed))
+
+  const keys = readFileSync("lib/db/ai-keys.ts", "utf8")
+  const display = keys.slice(keys.indexOf("const publicColumns"), keys.indexOf("export async function publicAiKeys"))
+  assert.ok(display.includes("keyHint"))
+  assert.ok(!/ciphertext|\biv\b|\btag\b/.test(display))
 })
 
 test("the masked hint contains no real key material", () => {

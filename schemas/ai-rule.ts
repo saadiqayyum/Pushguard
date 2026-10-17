@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { AI_LIMITS } from "@/lib/ai-budget"
 import { CHANGE_SOURCES, SEVERITIES, whenSchema } from "@/schemas/rule"
 
 // A rule answered by a model instead of a pattern.
@@ -12,6 +13,20 @@ export const AI_SCOPES = ["changed", "repository"] as const
 export type AiScope = (typeof AI_SCOPES)[number]
 
 const glob = z.string().min(1).max(256)
+
+const tokens = (name: keyof typeof AI_LIMITS, min: number) =>
+  z.number().int().min(min).max(AI_LIMITS[name].ceiling)
+
+// Per-call model settings. A key carries the same set; a rule's value wins.
+export const modelSettingsSchema = z.object({
+  model: z.string().trim().min(2).max(64).optional(),
+  effort: z.enum(["low", "medium", "high"]).optional(),
+  max_output_tokens: tokens("maxOutputTokens", 256).optional(),
+  thinking_budget: tokens("thinkingBudget", 0).optional(),
+  timeout_ms: tokens("timeoutMs", 5_000).optional(),
+  max_input_tokens: tokens("maxInputTokensPerRun", 1_000).optional(),
+})
+export type ModelSettings = z.infer<typeof modelSettingsSchema>
 
 export const aiRuleSchema = z
   .object({
@@ -28,13 +43,14 @@ export const aiRuleSchema = z
     // A scan has no push event, so a rule using this is push-only.
     when: whenSchema.optional(),
     // Tool calls one repository-scope run may make. Ignored for `changed`.
-    budget: z.number().int().min(5).max(120).default(40),
+    budget: z.number().int().min(5).max(AI_LIMITS.maxToolCalls.ceiling).default(AI_LIMITS.maxToolCalls.default),
     on: z.array(z.enum(CHANGE_SOURCES)).min(1).max(2).optional(),
     repos: z.array(glob).min(1).max(50).optional(),
     branches: z.array(glob).min(1).max(50).optional(),
     paths: z.array(glob).min(1).max(100).optional(),
     exclude_paths: z.array(glob).min(1).max(100).optional(),
     key: z.string().uuid().optional(),
+    ...modelSettingsSchema.shape,
   })
   .strict()
 

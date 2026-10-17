@@ -5,3 +5,6 @@ export const SOURCE_FILE =
 // js-x-ray parses these and throws on everything else.
 export const JS_FILE = /\.(?:js|mjs|cjs|jsx|ts|tsx|mts|cts)$/
 
+// Not code, but execution surfaces whose contents the fact index reads.
+export const INTEL_FILE =
+  /(?:^|\/)(?:package\.json|composer\.json|Makefile[^/]*|CMakeLists\.txt|configure(?:\.ac)?|Dockerfile[^/]*|Jenkinsfile|pom\.xml|tasks\.json|launch\.json|\.mcp\.json|settings(?:\.local)?\.json|devcontainer\.json|\.envrc)$|\.(?:m4|cmake|gradle|kts)$/i

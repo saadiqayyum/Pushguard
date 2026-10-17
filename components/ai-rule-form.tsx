@@ -13,8 +13,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { ChevronDown } from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { ModelLimitsFields } from "@/components/model-limits-fields";
 import { api, ApiClientError } from "@/lib/api-client";
 import { aiRuleSchema, type AiRule } from "@/schemas/ai-rule";
+import { AI_LIMITS } from "@/lib/ai-budget";
 import type { Severity } from "@/schemas/rule";
 
 // `from` prefills the form without implying the rule exists yet.
@@ -171,11 +175,6 @@ export function AiRuleForm({
               <SelectItem value="repository">The whole repository</SelectItem>
             </SelectContent>
           </Select>
-          <p className="text-xs text-muted-foreground">
-            {form.scope === "repository"
-              ? "Runs in the background: the model navigates the repository, reading files and following names."
-              : "Runs on the push or pull request, reading only the changed files your paths match."}
-          </p>
         </div>
         {form.scope === "repository" && (
           <div className="space-y-1.5">
@@ -184,15 +183,12 @@ export function AiRuleForm({
               id="budget"
               type="number"
               min={5}
-              max={120}
+              max={AI_LIMITS.maxToolCalls.ceiling}
               value={form.budget}
               onChange={(event) =>
                 setForm({ ...form, budget: Number(event.target.value) || 40 })
               }
             />
-            <p className="text-xs text-muted-foreground">
-              How many files one run may read. Higher costs more.
-            </p>
           </div>
         )}
       </div>
@@ -252,10 +248,6 @@ export function AiRuleForm({
             );
           })}
         </div>
-        <p className="text-xs text-muted-foreground">
-          Nothing selected means every push. These describe the push itself, so a
-          rule using them does not run on a scan.
-        </p>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2">
@@ -281,11 +273,72 @@ export function AiRuleForm({
           </Select>
           {keys.length === 0 && (
             <p className="text-xs text-muted-foreground">
-              No keys yet. The rule saves and stays idle until one is added.
+              No keys
             </p>
           )}
         </div>
       </div>
+
+      <Collapsible>
+        <CollapsibleTrigger asChild>
+          <Button type="button" variant="ghost" size="sm" className="group -ml-2 gap-1">
+            Model settings
+            <ChevronDown className="size-4 transition-transform group-data-[state=open]:rotate-180" />
+          </Button>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="space-y-3 pt-2">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="rule-model">Model</Label>
+              <Input
+                id="rule-model"
+                value={form.model ?? ""}
+                className="font-mono"
+                placeholder="Key default"
+                onChange={(event) => setForm({ ...form, model: event.target.value.trim() || undefined })}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Effort</Label>
+              <Select
+                value={form.effort ?? "default"}
+                onValueChange={(value) =>
+                  setForm({ ...form, effort: value === "default" ? undefined : (value as AiRule["effort"]) })
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="default">Key default</SelectItem>
+                  <SelectItem value="low">Low</SelectItem>
+                  <SelectItem value="medium">Medium</SelectItem>
+                  <SelectItem value="high">High</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <ModelLimitsFields
+            prefix="rule"
+            withInput
+            value={{
+              maxOutputTokens: form.max_output_tokens,
+              thinkingBudget: form.thinking_budget,
+              timeoutMs: form.timeout_ms,
+              maxInputTokens: form.max_input_tokens,
+            }}
+            onChange={(next) =>
+              setForm({
+                ...form,
+                max_output_tokens: next.maxOutputTokens ?? undefined,
+                thinking_budget: next.thinkingBudget ?? undefined,
+                timeout_ms: next.timeoutMs ?? undefined,
+                max_input_tokens: next.maxInputTokens ?? undefined,
+              })
+            }
+          />
+        </CollapsibleContent>
+      </Collapsible>
 
       <div className="space-y-1.5">
         <Label htmlFor="paths">Paths</Label>
@@ -296,10 +349,6 @@ export function AiRuleForm({
           placeholder="**/*.ts, src/**"
           onChange={(event) => setPaths(event.target.value)}
         />
-        <p className="text-xs text-muted-foreground">
-          Comma separated. Narrower paths cost less: a rule reads only what
-          matches.
-        </p>
       </div>
 
       <div className="flex justify-end pt-1">

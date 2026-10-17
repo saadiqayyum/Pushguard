@@ -52,7 +52,7 @@ export function CatalogDialog<T extends CatalogItem>({
         open={open}
         onOpenChange={setOpen}
         title="Rule catalog"
-        description="Every rule Pushguard ships, and AI rule examples. Pick one to start your own from it."
+        description="Shipped rules and AI rule examples"
         showCloseButton
         className="top-1/2 flex max-h-[80dvh] -translate-y-1/2 flex-col overflow-hidden sm:max-w-3xl"
       >
@@ -66,7 +66,7 @@ export function CatalogDialog<T extends CatalogItem>({
               return (
                 <CommandGroup
                   key={pack.id}
-                  heading={`${pack.title} — ${pack.blurb}`}
+                  heading={`${pack.title}: ${pack.blurb}`}
                 >
                   {inPack.map((rule) => (
                     <CommandItem
@@ -81,7 +81,7 @@ export function CatalogDialog<T extends CatalogItem>({
                       <span className="w-16 shrink-0">
                         <SeverityBadge severity={rule.severity} />
                       </span>
-                      <span className="w-64 shrink-0 truncate font-medium">
+                      <span className="w-[clamp(7rem,35%,16rem)] shrink-0 truncate font-medium">
                         {rule.id}
                       </span>
                       <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">

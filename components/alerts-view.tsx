@@ -8,12 +8,12 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { SeverityBadge } from "@/components/severity-badge";
 import { TableShell } from "@/components/table-shell";
+import { TableColumns, ALERT_COLUMNS } from "@/components/table-columns";
 import { TableToolbar } from "@/components/table-toolbar";
 import {
   TableBody,
   TableCell,
   TableHead,
-  TableHeader,
   TableRow,
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
@@ -43,10 +43,12 @@ type Action = "archive" | "unarchive" | "close";
 // The alert feed, with bulk triage.
 export function AlertsView({
   alerts,
+  total,
   archived,
   orgSwitcher,
 }: {
   alerts: AlertRow[];
+  total: number;
   archived: boolean;
   orgSwitcher?: React.ReactNode;
 }) {
@@ -99,7 +101,7 @@ export function AlertsView({
   return (
     <div className="space-y-4">
       <TableToolbar
-        count={selected.size > 0 ? selected.size : alerts.length}
+        count={selected.size > 0 ? selected.size : total}
         noun={selected.size > 0 ? "selected" : "alert"}
         plural={selected.size > 0 ? "selected" : undefined}
         actions={
@@ -135,16 +137,17 @@ export function AlertsView({
       >
         {orgSwitcher}
         <Button variant="ghost" size="sm" asChild>
-          <Link href={archived ? "/dashboard" : "/dashboard?archived=1"}>
+          <Link href={archived ? "/dashboard/alerts" : "/dashboard/alerts?archived=1"}>
             {archived ? <Inbox className="size-4" /> : <Archive className="size-4" />}
             {archived ? "Open alerts" : "Archived"}
           </Link>
         </Button>
       </TableToolbar>
 
-      <TableShell minWidth="md:min-w-[900px]">
-        <TableHeader>
-          <TableRow>
+      <TableShell>
+        <TableColumns
+          columns={ALERT_COLUMNS}
+          lead={
             <TableHead className="w-10">
               <Checkbox
                 checked={allSelected}
@@ -157,14 +160,8 @@ export function AlertsView({
                 aria-label="Select all"
               />
             </TableHead>
-            <TableHead>Alert</TableHead>
-            <TableHead className="hidden md:table-cell">Repository</TableHead>
-            <TableHead className="hidden lg:table-cell">Branch</TableHead>
-            <TableHead className="hidden lg:table-cell">Triage</TableHead>
-            <TableHead className="hidden md:table-cell">When</TableHead>
-            <TableHead className="text-right">State</TableHead>
-          </TableRow>
-        </TableHeader>
+          }
+        />
         <TableBody>
           {alerts.length === 0 && (
             <TableRow>
@@ -172,7 +169,7 @@ export function AlertsView({
                 colSpan={7}
                 className="text-center text-sm text-muted-foreground"
               >
-                {archived ? "Nothing archived." : "No alerts. Quiet is good."}
+                {archived ? "Nothing archived" : "No alerts"}
               </TableCell>
             </TableRow>
           )}
@@ -192,12 +189,12 @@ export function AlertsView({
                 >
                   <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
                     <SeverityBadge severity={alert.severity} />
-                    <span className="font-medium">
+                    <span className="font-medium wrap-anywhere">
                       {alertHeadline(alert.title, alert.repo)}
                     </span>
                     {alert.occurrences > 1 && (
                       <span className="rounded-full bg-muted px-2 py-0.5 text-[0.6875rem] text-muted-foreground">
-                        {alert.occurrences}×
+                        <span className="tabular-nums">{alert.occurrences}×</span>
                       </span>
                     )}
                   </span>
@@ -210,19 +207,19 @@ export function AlertsView({
                   </span>
                 </Link>
               </TableCell>
-              <TableCell className="hidden font-mono text-xs whitespace-nowrap text-muted-foreground md:table-cell">
+              <TableCell className="hidden font-mono text-xs wrap-anywhere text-muted-foreground md:table-cell">
                 {alert.repo}#{alert.number}
               </TableCell>
-              <TableCell className="hidden font-mono text-xs whitespace-nowrap text-muted-foreground lg:table-cell">
+              <TableCell className="hidden font-mono text-xs wrap-anywhere text-muted-foreground lg:table-cell">
                 {alert.pullRequest ? `PR #${alert.pullRequest}` : (alert.branch ?? "—")}
               </TableCell>
               <TableCell className="hidden text-xs text-muted-foreground lg:table-cell">
                 {alert.assignees.length > 0
                   ? alert.assignees.join(", ")
                   : alert.acknowledgedBy
-                    ? `seen by ${alert.acknowledgedBy}, unassigned`
+                    ? `Seen by ${alert.acknowledgedBy}`
                     : alert.state === "open"
-                      ? "nobody has opened this"
+                      ? "Unassigned"
                       : "—"}
               </TableCell>
               <TableCell className="hidden text-xs whitespace-nowrap text-muted-foreground md:table-cell">

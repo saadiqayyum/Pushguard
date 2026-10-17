@@ -1,6 +1,7 @@
 import { confirmContentMatches, erasedLines, erasureRules, evaluateRules, type PushContext } from "@/lib/engine"
 import { toFinding, type ForcePushForensics } from "@/lib/finding"
-import { fetchAddedLines, fetchErasedHistory } from "@/lib/github"
+import { fetchErasedHistory } from "@/lib/github"
+import type { PushDiff } from "@/lib/push-diff"
 import { logger } from "@/lib/logger"
 import type { Rule } from "@/schemas/rule"
 
@@ -16,17 +17,17 @@ export async function inspectForcePush(
   after: string,
   rules: Rule[],
   branch: string,
+  loadDiff: () => Promise<PushDiff>,
 ): Promise<ForcePushForensics | null> {
   const applicable = erasureRules(rules)
   if (applicable.length === 0) return null
 
   try {
-    const orphaned = await fetchErasedHistory(installationId, repo, before, after)
+    const [orphaned, surviving] = await Promise.all([fetchErasedHistory(installationId, repo, before, after), loadDiff()])
     if (!orphaned) return null
 
-    const surviving = await fetchAddedLines(installationId, repo, before, after)
     const gone = erasedLines(orphaned.addedLines, surviving.addedLines)
-    if (gone.length === 0) {
+    if (gone.size === 0) {
       logger.info("force_push_no_erased_content", { repo, before, after })
       return null
     }
@@ -66,7 +67,7 @@ export async function inspectForcePush(
       erasedFiles: [...new Set(confirmed.flatMap((match) => match.matchedFiles))],
       findings,
       mergeBase: orphaned.mergeBase,
-      truncated: orphaned.truncated || surviving.truncated,
+      truncated: orphaned.truncated || surviving.truncated || surviving.unread.length > 0,
     }
   } catch (error) {
     logger.warn("force_push_inspection_failed", {

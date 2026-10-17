@@ -1,3 +1,4 @@
+import { AI_LIMITS } from "@/lib/ai-budget"
 import { z } from "zod"
 import { ruleSchema } from "@/schemas/rule"
 import { checkedRuleSchema } from "@/schemas/rule-safety"
@@ -42,6 +43,10 @@ export const bulkAlertsBody = z
 // A whole rules file, YAML or JSON, as text. Capped so a paste cannot become a
 // denial of service; the schema decides whether the contents are legal.
 export const importRulesBody = z.object({ content: z.string().min(1).max(200_000) }).strict()
+export const MAX_IMPORTED_RULES = 200
+
+// Stored rules per org: custom rules plus edited catalog rules.
+export const MAX_RULES_PER_ORG = 300
 
 export const updateRuleBody = z
   .object({
@@ -97,6 +102,17 @@ export type UpdateRuleBody = z.infer<typeof updateRuleBody>
 export type TestRuleBody = z.infer<typeof testRuleBody>
 
 const MAX_BASE_URL_LENGTH = 200
+export const MAX_AI_KEYS_PER_ORG = 10
+
+const keyLimit = (name: keyof typeof AI_LIMITS, min: number) =>
+  z.number().int().min(min).max(AI_LIMITS[name].ceiling).nullable().optional()
+
+// Per-key call settings. Null clears back to the default.
+const keySettings = {
+  maxOutputTokens: keyLimit("maxOutputTokens", 256),
+  thinkingBudget: keyLimit("thinkingBudget", 0),
+  timeoutMs: keyLimit("timeoutMs", 5_000),
+}
 
 // Adding a key.
 export const addAiKeyBody = z
@@ -111,6 +127,7 @@ export const addAiKeyBody = z
     effort: z.enum(["low", "medium", "high"]).default("medium"),
     // https only: the key travels in a header to whatever host this names.
     baseUrl: z.string().trim().url().max(MAX_BASE_URL_LENGTH).startsWith("https://").optional(),
+    ...keySettings,
   })
   .strict()
 
@@ -120,6 +137,19 @@ export const aiSettingsBody = z.object({ defaultKey: z.string().uuid() }).strict
 // Editing one. The secret is optional; sending one replaces it.
 export const editAiKeyBody = addAiKeyBody.partial({ apiKey: true })
 
+// Org-wide token budgets. Null returns to the default.
+export const aiBudgetBody = z
+  .object({
+    dailyTokenBudget: z.number().int().min(10_000).max(AI_LIMITS.dailyTokenBudget.ceiling).nullable(),
+    pushTokenBudget: z.number().int().min(5_000).max(AI_LIMITS.pushTokenBudget.ceiling).nullable(),
+  })
+  .strict()
+
+export const MAX_MCP_TOKENS_PER_ORG = 5
+export const createMcpTokenBody = z.object({ label: z.string().trim().min(1).max(40) }).strict()
+
 export type AddAiKeyBody = z.infer<typeof addAiKeyBody>
 export type EditAiKeyBody = z.infer<typeof editAiKeyBody>
 export type AiSettingsBody = z.infer<typeof aiSettingsBody>
+
+export const setPackBody = z.object({ enabled: z.boolean() }).strict()

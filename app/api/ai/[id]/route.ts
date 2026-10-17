@@ -1,53 +1,52 @@
-import { NextResponse } from "next/server"
-import { db } from "@/lib/db"
+import { publicAiKeys, replaceAiKey, updateAiKey } from "@/lib/db"
 import { AppError } from "@/lib/errors"
 import { logger } from "@/lib/logger"
-import { withErrorHandler } from "@/lib/route"
+import { respond, userRoute } from "@/lib/route"
 import { hint, seal } from "@/lib/secret-box"
-import { requireManagedTenant } from "@/lib/tenant"
+import { requireAdmin } from "@/lib/tenant"
 import { editAiKeyBody } from "@/schemas/api"
+import { aiKeyOut } from "@/schemas/output"
 
-// Edit one stored key.
-export const PATCH = withErrorHandler("/api/ai/[id]", async (request, { params }) => {
+export const PATCH = userRoute("/api/ai/[id]", async (request, { params }) => {
   const { id } = await params
   const body = editAiKeyBody.parse(await request.json())
+  const { login, org } = await requireAdmin()
 
-  const { login, org } = await requireManagedTenant()
-
-  const existing = await db.installations().findOne({ org })
-  const key = (existing?.aiKeys ?? []).find((entry) => entry.id === id)
-  if (!key) throw new AppError("not_found", "No such key")
-
-  if ((existing?.aiKeys ?? []).some((entry) => entry.id !== id && entry.label === body.label)) {
+  const keys = await publicAiKeys(org)
+  const current = keys.find((key) => key.id === id)
+  if (!current) throw new AppError("not_found", "No such key")
+  if (keys.some((key) => key.id !== id && key.label === body.label)) {
     throw new AppError("validation_failed", `A key named "${body.label}" already exists`)
   }
+  if (body.provider !== current.provider && !body.apiKey) {
+    throw new AppError("validation_failed", "Changing the provider needs the new provider's key")
+  }
 
-  const updated = {
-    ...key,
+  const fields = {
     label: body.label,
-    provider: body.provider,
     model: body.model,
     effort: body.effort,
-    ...(body.baseUrl ? { baseUrl: body.baseUrl } : {}),
-    ...(body.apiKey ? { key: seal(body.apiKey), keyHint: hint(body.apiKey) } : {}),
+    baseUrl: body.baseUrl ?? null,
+    maxOutputTokens: body.maxOutputTokens ?? null,
+    thinkingBudget: body.thinkingBudget ?? null,
+    timeoutMs: body.timeoutMs ?? null,
   }
-  if (!body.baseUrl) delete updated.baseUrl
-
-  await db.installations().updateOne(
-    { org, "aiKeys.id": id },
-    { $set: { "aiKeys.$": updated, updatedAt: new Date() } },
-  )
+  const keyHint = body.apiKey ? hint(body.apiKey) : current.keyHint
+  if (body.apiKey) {
+    await replaceAiKey({
+      id,
+      org,
+      ...fields,
+      provider: body.provider,
+      keyHint,
+      ...seal(body.apiKey),
+      addedBy: login,
+      addedAt: new Date(),
+    })
+  } else {
+    await updateAiKey(org, id, fields)
+  }
   logger.info("ai_key_edited", { org, by: login, replaced: Boolean(body.apiKey) })
 
-  return NextResponse.json({
-    data: {
-      id: updated.id,
-      label: updated.label,
-      provider: updated.provider,
-      keyHint: updated.keyHint,
-      model: updated.model,
-      effort: updated.effort,
-      baseUrl: updated.baseUrl,
-    },
-  })
+  return respond(aiKeyOut, { id, ...fields, provider: body.provider, keyHint, baseUrl: fields.baseUrl ?? undefined })
 })

@@ -63,8 +63,7 @@ its hunks do not fit, so nothing is silently absent.
 `lib/code-index.ts` + `lib/db/code-index.ts`. Paths and identifiers only, never
 source — a copy of the database is not a copy of anybody's code.
 
-Three things keep it current, **none of them a schedule** (Vercel Hobby = one
-cron/day):
+Three things keep it current, **none of them a schedule**; each is a queued job:
 
 - install / repo added → queues a full index
 - push → indexes its own changed files, in its own invocation

@@ -1,0 +1,60 @@
+# Copy to .github/workflows/pushguard-runner.yml in the runner repository.
+# Untrusted code runs here: no secrets, read-only token used only to fetch the detonator, no output.
+name: pushguard-runner
+
+on:
+  label:
+    types: [created]
+
+permissions:
+  contents: read
+
+env:
+  # FILL AT RELEASE: release tag in this repository holding detonator-linux-amd64, and its sha256.
+  DETONATOR_TAG: v0.0.0
+  DETONATOR_SHA256: "0000000000000000000000000000000000000000000000000000000000000000"
+  # FILL AT RELEASE: pin ioi/isolate to a reviewed commit and gitleaks to a checksummed build.
+  ISOLATE_REF: v2.0
+  GITLEAKS_URL: https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz
+  GITLEAKS_SHA256: "0000000000000000000000000000000000000000000000000000000000000000"
+
+jobs:
+  run:
+    if: startsWith(github.event.label.name, 'pg-') && startsWith(github.event.label.description, 'pushguard:')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # The token is scoped to this step only, before any tenant code exists on the machine.
+      - name: Fetch and verify detonator
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$DETONATOR_TAG" --repo "$GITHUB_REPOSITORY" --pattern detonator-linux-amd64 --output detonator
+          echo "$DETONATOR_SHA256  detonator" | sha256sum -c --quiet -
+          chmod +x detonator
+
+      - name: Install sandbox and scanners
+        run: |
+          {
+            sudo apt-get update -q
+            sudo apt-get install -yq --no-install-recommends strace yara libcap-dev libsystemd-dev pkg-config
+            git clone --depth 1 --branch "$ISOLATE_REF" https://github.com/ioi/isolate /tmp/isolate
+            make -C /tmp/isolate isolate
+            sudo make -C /tmp/isolate install
+            pipx install semgrep==1.90.0
+            pipx install guarddog==2.0.0
+            curl -fsSL -o /tmp/gitleaks.tgz "$GITLEAKS_URL"
+          } > /dev/null 2>&1
+          echo "$GITLEAKS_SHA256  /tmp/gitleaks.tgz" | sha256sum -c --quiet - && sudo tar -xzf /tmp/gitleaks.tgz -C /usr/local/bin gitleaks || echo "gitleaks unverified, skipped"
+
+      # Label values reach the script only through env, so they cannot inject shell.
+      # Tenant data never reaches the log: results leave only through the report token.
+      - name: Run
+        env:
+          PUSHGUARD_LABEL: ${{ github.event.label.name }}
+          PUSHGUARD_DESCRIPTION: ${{ github.event.label.description }}
+        run: |
+          rest="${PUSHGUARD_DESCRIPTION#pushguard:}"
+          export PUSHGUARD_NONCE="${PUSHGUARD_LABEL#pg-}" PUSHGUARD_KIND="${rest%% *}" PUSHGUARD_ENDPOINT="${rest#* }"
+          unset PUSHGUARD_LABEL PUSHGUARD_DESCRIPTION
+          if sudo --preserve-env=PUSHGUARD_NONCE,PUSHGUARD_ENDPOINT,PUSHGUARD_KIND ./detonator > /dev/null 2>&1; then echo done; else echo failed; exit 1; fi

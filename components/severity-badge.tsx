@@ -12,14 +12,17 @@ const TONE: Record<Severity, string> = {
 
 export function SeverityBadge({
   severity,
+  count,
   className,
 }: {
   severity: Severity
+  count?: string
   className?: string
 }) {
   return (
     <Badge variant="outline" className={cn("border-transparent", TONE[severity], className)}>
       {severity}
+      {count !== undefined && <span className="tabular-nums font-semibold">{count}</span>}
     </Badge>
   )
 }

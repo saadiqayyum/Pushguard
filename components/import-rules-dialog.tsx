@@ -45,15 +45,10 @@ export function ImportRulesDialog() {
       </Button>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-h-[85vh] w-[calc(100%-2rem)] max-w-2xl gap-4 overflow-y-auto p-6 sm:max-w-2xl">
+        <DialogContent className="max-h-[85dvh] w-[calc(100%-2rem)] max-w-2xl gap-4 overflow-y-auto p-6 sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>Import rules</DialogTitle>
           </DialogHeader>
-
-          <p className="text-sm text-muted-foreground">
-            Paste a rules file, or choose one. YAML or JSON. A rule whose id already exists is
-            updated; the rest are added.
-          </p>
 
           <div className="flex flex-wrap gap-2">
             <Button variant="outline" size="sm" asChild>
@@ -89,12 +84,12 @@ export function ImportRulesDialog() {
             className="font-mono text-xs"
           />
 
-          <div className="flex justify-end gap-2">
+          <div className="sticky bottom-0 -mx-6 -mb-6 flex justify-end gap-2 border-t bg-popover px-6 py-4">
             <Button variant="ghost" onClick={() => setOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={submit} disabled={busy || !content.trim()}>
-              {busy ? "Importing…" : "Import"}
+            <Button onClick={submit} disabled={busy || !content.trim()} aria-busy={busy}>
+              Import
             </Button>
           </div>
         </DialogContent>

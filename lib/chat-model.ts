@@ -18,11 +18,12 @@ export function chatModel(
     maxTokens: number;
     maxRetries: number;
     effort?: AiCredentials["effort"];
+    thinkingBudget?: number;
     baseUrl?: string;
   },
   apiKey: string,
 ): BaseChatModel {
-  const { maxTokens, maxRetries, effort, baseUrl } = options;
+  const { maxTokens, maxRetries, effort, thinkingBudget, baseUrl } = options;
 
   switch (provider) {
     case "anthropic":
@@ -32,10 +33,7 @@ export function chatModel(
         maxTokens,
         maxRetries,
         anthropicApiUrl: baseUrl,
-        // Anthropic-only. Sending either to another provider is a 400.
-        ...(effort
-          ? { thinking: { type: "adaptive" }, outputConfig: { effort } }
-          : {}),
+        ...anthropicThinking(model, maxTokens, effort, thinkingBudget),
       });
     case "openai":
       return new ChatOpenAI({
@@ -44,6 +42,7 @@ export function chatModel(
         maxTokens,
         maxRetries,
         configuration: baseUrl ? { baseURL: baseUrl } : undefined,
+        ...(effort ? { reasoning: { effort } } : {}),
       });
     case "google-genai":
       return new ChatGoogleGenerativeAI({
@@ -52,8 +51,38 @@ export function chatModel(
         maxOutputTokens: maxTokens,
         maxRetries,
         baseUrl,
+        ...googleThinking(model, effort, thinkingBudget),
       });
   }
+}
+
+// Models before 4.6 take a fixed thinking budget and reject effort; later ones
+// reject the budget with a 400 and take adaptive thinking plus effort.
+const LEGACY_ANTHROPIC = /claude-(3|(haiku|sonnet|opus)-4-[0-5]\b|(haiku|sonnet|opus)-4-\d{8})/;
+const MIN_THINKING_BUDGET = 1024;
+
+function anthropicThinking(
+  model: string,
+  maxTokens: number,
+  effort?: AiCredentials["effort"],
+  thinkingBudget?: number,
+) {
+  if (LEGACY_ANTHROPIC.test(model)) {
+    const budget = Math.min(thinkingBudget ?? 0, maxTokens - 1);
+    return effort && budget >= MIN_THINKING_BUDGET
+      ? { thinking: { type: "enabled" as const, budget_tokens: budget } }
+      : {};
+  }
+  return effort ? { thinking: { type: "adaptive" as const }, outputConfig: { effort } } : {};
+}
+
+// Gemini 3 takes a level, 2.5 a token budget; sending the other is an error.
+function googleThinking(model: string, effort?: AiCredentials["effort"], thinkingBudget?: number) {
+  if (/gemini-2\.5/.test(model) && thinkingBudget) return { thinkingConfig: { thinkingBudget } };
+  if (/gemini-[3-9]/.test(model) && effort) {
+    return { thinkingConfig: { thinkingLevel: effort.toUpperCase() as "LOW" | "MEDIUM" | "HIGH" } };
+  }
+  return {};
 }
 
 // Triage always runs on something cheap, whoever the provider is.

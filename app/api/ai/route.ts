@@ -1,99 +1,67 @@
-import { NextResponse } from "next/server"
-import { db } from "@/lib/db"
+import { activeInstallation, countAiKeys, deleteAiKey, insertAiKey, publicAiKeys, updateInstallation } from "@/lib/db"
 import { AppError } from "@/lib/errors"
 import { logger } from "@/lib/logger"
-import { withErrorHandler } from "@/lib/route"
+import { respond, userRoute } from "@/lib/route"
 import { hint, seal } from "@/lib/secret-box"
-import { requireManagedTenant } from "@/lib/tenant"
-import { addAiKeyBody, aiSettingsBody } from "@/schemas/api"
+import { requireAdmin } from "@/lib/tenant"
+import { addAiKeyBody, aiSettingsBody, MAX_AI_KEYS_PER_ORG } from "@/schemas/api"
+import { aiKeyOut, defaultKeyOut, nothingOut } from "@/schemas/output"
 
-
-// Add a key.
-export const POST = withErrorHandler("/api/ai", async (request) => {
+export const POST = userRoute("/api/ai", async (request) => {
   const body = addAiKeyBody.parse(await request.json())
-  const { org, login } = await requireManagedTenant()
-  const existing = await db.installations().findOne({ org })
-  if ((existing?.aiKeys ?? []).some((entry) => entry.label === body.label)) {
+  const { org, login } = await requireAdmin()
+
+  const keys = await publicAiKeys(org)
+  if (keys.length >= MAX_AI_KEYS_PER_ORG) {
+    throw new AppError("validation_failed", `At most ${MAX_AI_KEYS_PER_ORG} keys per organization`)
+  }
+  if (keys.some((key) => key.label === body.label)) {
     throw new AppError("validation_failed", `A key named "${body.label}" already exists`)
   }
 
-  const entry = {
+  const key = {
     id: crypto.randomUUID(),
+    org,
     label: body.label,
     provider: body.provider,
-    key: seal(body.apiKey),
     keyHint: hint(body.apiKey),
     model: body.model,
     effort: body.effort,
-    ...(body.baseUrl ? { baseUrl: body.baseUrl } : {}),
+    baseUrl: body.baseUrl ?? null,
+    maxOutputTokens: body.maxOutputTokens ?? null,
+    thinkingBudget: body.thinkingBudget ?? null,
+    timeoutMs: body.timeoutMs ?? null,
+    ...seal(body.apiKey),
     addedBy: login,
     addedAt: new Date(),
   }
+  await insertAiKey(key)
+  if (!(await activeInstallation(org))?.aiDefaultKey) await updateInstallation(org, { aiDefaultKey: key.id })
+  logger.info("ai_key_added", { org, by: login, provider: body.provider })
 
-  await db.installations().updateOne(
-    { org },
-    {
-      $push: { aiKeys: entry },
-      $set: {
-        updatedAt: new Date(),
-        ...(existing?.aiDefaultKey ? {} : { aiDefaultKey: entry.id }),
-      },
-    },
-  )
-  logger.info("ai_key_added", { org, by: login, label: body.label, provider: body.provider })
-
-  return NextResponse.json(
-    {
-      data: {
-        id: entry.id,
-        label: entry.label,
-        provider: entry.provider,
-        keyHint: entry.keyHint,
-        model: entry.model,
-        effort: entry.effort,
-        baseUrl: entry.baseUrl,
-      },
-    },
-    { status: 201 },
-  )
+  return respond(aiKeyOut, { ...key, baseUrl: key.baseUrl ?? undefined }, { status: 201 })
 })
 
-// Change which key runs when a rule does not name one.
-export const PATCH = withErrorHandler("/api/ai", async (request) => {
-  const body = aiSettingsBody.parse(await request.json())
-  const { org, login } = await requireManagedTenant()
-  const existing = await db.installations().findOne({ org })
-  const keys = existing?.aiKeys ?? []
-  if (!keys.some((entry) => entry.id === body.defaultKey)) {
-    throw new AppError("not_found", "No such key")
-  }
+export const PATCH = userRoute("/api/ai", async (request) => {
+  const { defaultKey } = aiSettingsBody.parse(await request.json())
+  const { org, login } = await requireAdmin()
+  if (!(await publicAiKeys(org)).some((key) => key.id === defaultKey)) throw new AppError("not_found", "No such key")
 
-  await db.installations().updateOne(
-    { org },
-    { $set: { aiDefaultKey: body.defaultKey, updatedAt: new Date() } },
-  )
+  await updateInstallation(org, { aiDefaultKey: defaultKey })
   logger.info("ai_default_key_set", { org, by: login })
-  return NextResponse.json({ data: { defaultKey: body.defaultKey } })
+  return respond(defaultKeyOut, { defaultKey })
 })
 
-// Remove one key.
-export const DELETE = withErrorHandler("/api/ai", async (request) => {
+export const DELETE = userRoute("/api/ai", async (request) => {
   const id = new URL(request.url).searchParams.get("id")
   if (!id) throw new AppError("validation_failed", "Which key?")
-  const { org, login } = await requireManagedTenant()
-  const existing = await db.installations().findOne({ org })
-  const remaining = (existing?.aiKeys ?? []).filter((entry) => entry.id !== id)
+  const { org, login } = await requireAdmin()
 
-  await db.installations().updateOne(
-    { org },
-    {
-      $set: {
-        aiKeys: remaining,
-        ...(existing?.aiDefaultKey === id ? { aiDefaultKey: remaining[0]?.id } : {}),
-        updatedAt: new Date(),
-      },
-    },
-  )
-  logger.info("ai_key_removed", { org, by: login, remaining: remaining.length })
-  return NextResponse.json({ data: null })
+  if (!(await deleteAiKey(org, id))) throw new AppError("not_found", "No such key")
+  if ((await activeInstallation(org))?.aiDefaultKey === id) {
+    const [next] = await publicAiKeys(org)
+    await updateInstallation(org, { aiDefaultKey: next?.id ?? null })
+  }
+  logger.info("ai_key_removed", { org, by: login, remaining: await countAiKeys(org) })
+  return respond(nothingOut, null)
 })

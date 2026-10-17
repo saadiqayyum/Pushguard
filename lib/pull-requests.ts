@@ -1,16 +1,19 @@
 import { runAiRules } from "@/lib/ai-rules"
-import { processMatches } from "@/lib/alerts"
-import { fromPullRequest } from "@/lib/change-event"
+import { compareTruncatedFinding, processMatches } from "@/lib/alerts"
+import { changedFilesOfCompare, fromPullRequest } from "@/lib/change-event"
 import {
   MAX_OPEN_PULL_REQUESTS_PER_REPO,
+  recordMergedPullRequest,
   removePullRequest,
   replaceRepoPullRequests,
   upsertPullRequest,
   type InstallationDoc,
 } from "@/lib/db"
-import { evaluateRules, type ChangedFile, type PushContext } from "@/lib/engine"
-import { fetchCompareFiles, listOpenPullRequests } from "@/lib/github"
+import { evaluateRules, type PushContext } from "@/lib/engine"
+import { listOpenPullRequests } from "@/lib/github"
 import { logger } from "@/lib/logger"
+import { actionPinFindings } from "@/lib/pin-check"
+import { pushDiffLoader } from "@/lib/push-diff-loader"
 import { queueRepositoryRules } from "@/lib/review-session"
 import { getActiveRules } from "@/lib/rules"
 import type { PullRequestPayload } from "@/schemas/webhook"
@@ -30,6 +33,8 @@ export async function notePullRequest(payload: PullRequestPayload): Promise<void
   const repo = payload.repository.full_name
   if (CLOSING_ACTIONS.has(payload.action)) {
     await removePullRequest(repo, payload.number)
+    const { merged, merge_commit_sha: mergeSha, head } = payload.pull_request
+    if (merged) await recordMergedPullRequest(repo, payload.number, [head.sha, ...(mergeSha ? [mergeSha] : [])])
     return
   }
   const { pull_request: pr } = payload
@@ -52,13 +57,6 @@ export function shouldEvaluatePullRequest(action: string): boolean {
   return EVALUATED_ACTIONS.has(action)
 }
 
-const STATUS_TO_CHANGE: Record<string, ChangedFile["changeType"]> = {
-  added: "added",
-  removed: "removed",
-  renamed: "added",
-  copied: "added",
-}
-
 // The pull request's whole diff against its base, not the last push to it.
 // Every synchronize re-reads it, and the alert threads instead of repeating.
 export async function evaluatePullRequest(
@@ -68,13 +66,11 @@ export async function evaluatePullRequest(
 ): Promise<void> {
   const repo = payload.repository.full_name
   const { pull_request: pr } = payload
-  const rules = await getActiveRules(installation.installedBy)
+  const rules = await getActiveRules(installation.org)
 
-  const compared = await fetchCompareFiles(installation.installationId, repo, pr.base.sha, pr.head.sha)
-  const files: ChangedFile[] = compared.files.map((file) => ({
-    path: file.path,
-    changeType: STATUS_TO_CHANGE[file.status] ?? "modified",
-  }))
+  const loadDiff = pushDiffLoader(installation.installationId, repo, pr.base.sha, pr.head.sha)
+  const compared = await loadDiff()
+  const files = changedFilesOfCompare(compared.files)
 
   const context: PushContext = {
     event: "pull_request",
@@ -92,7 +88,11 @@ export async function evaluatePullRequest(
     pullRequest: { number: payload.number, head: pr.head.ref, draft: pr.draft, opened: payload.action === "opened" },
   }
   const matches = evaluateRules(rules, context)
-  const aiFindings = await runAiRules(installation, repo, pr.base.ref, pr.head.sha, files, context)
+  const aiFindings = [
+    ...(compared.filesCapped ? [compareTruncatedFinding(repo)] : []),
+    ...(await actionPinFindings(installation.installationId, repo, compared.files)),
+    ...(await runAiRules(installation, repo, pr.base.ref, pr.head.sha, files, context)),
+  ]
 
   logger.info("pull_request_evaluated", {
     deliveryId,
@@ -115,5 +115,5 @@ export async function evaluatePullRequest(
     { number: payload.number, base: pr.base.ref, url: pr.html_url },
   )
   if (matches.length === 0 && aiFindings.length === 0) return
-  await processMatches(installation, fromPullRequest(payload, files), matches, null, aiFindings)
+  await processMatches(installation, fromPullRequest(payload, files), matches, null, aiFindings, loadDiff)
 }

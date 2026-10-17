@@ -1,399 +1,226 @@
-"use client";
+"use client"
 
-import { useState } from "react";
-import {
-  AlertTriangle,
-  Copy,
-  MoreHorizontal,
-  Pencil,
-  Plus,
-} from "lucide-react";
-import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Switch } from "@/components/ui/switch";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { Pager } from "@/components/pager";
-import type { ScopeOption } from "@/components/scope-select";
-import { RuleForm, type RuleFormMode } from "@/components/rule-form";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { api, ApiClientError } from "@/lib/api-client";
-import type { Rule, Severity } from "@/schemas/rule";
-import type { RuleRow } from "@/components/rule-types";
-import { ImportRulesDialog } from "@/components/import-rules-dialog";
-import { CatalogDialog, type CatalogPack } from "@/components/catalog-dialog";
-import { AiRuleForm, type AiRuleFormMode } from "@/components/ai-rule-form";
-import { AI_EXAMPLE_PACKS, aiExamples } from "@/lib/rules/ai-examples";
-import type { AiRule } from "@/schemas/ai-rule";
-import { PageHeader } from "@/components/page-header";
-import { TableToolbar } from "@/components/table-toolbar";
-import { SeverityBadge } from "@/components/severity-badge";
-import { TableShell } from "@/components/table-shell";
+import { useState } from "react"
+import { useRouter } from "next/navigation"
+import { AlertTriangle } from "lucide-react"
+import { toast } from "sonner"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { Button } from "@/components/ui/button"
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet"
+import { AiRuleForm, type AiRuleFormMode } from "@/components/ai-rule-form"
+import type { CatalogPack } from "@/components/catalog-dialog"
+import { PageHeader } from "@/components/page-header"
+import { RuleForm, type RuleFormMode } from "@/components/rule-form"
+import type { RuleRow } from "@/components/rule-types"
+import { RuleLine, RuleSection, ruleName, ruleSummary } from "@/components/rules/rule-section"
+import { RulesActions, RulesFilter } from "@/components/rules/rules-toolbar"
+import type { ScopeOption } from "@/components/scope-select"
+import { api, ApiClientError } from "@/lib/api-client"
+import type { Severity } from "@/schemas/rule"
+
+type Section = { id: string; title: string; rows: RuleRow[]; pack?: boolean }
+
+const failure = (error: unknown) => (error instanceof ApiClientError ? error.message : "Update failed")
 
 export function RulesView({
   initialRules,
-  catalog,
+  disabledPacks,
+  catalogOff,
   catalogPacks,
   aiKeys,
   loadError,
-  paging,
   scopeOptions,
+  checks,
+  readOnly = false,
 }: {
-  initialRules: RuleRow[];
-  catalog: Rule[];
-  catalogPacks: CatalogPack[];
-  aiKeys: { id: string; label: string; model: string }[];
-  loadError: boolean;
-  paging: { page: number; perPage: number; total: number; hasMore: boolean };
-  scopeOptions: ScopeOption[];
+  initialRules: RuleRow[]
+  disabledPacks: string[]
+  catalogOff: string[]
+  catalogPacks: CatalogPack[]
+  aiKeys: { id: string; label: string; model: string }[]
+  loadError: boolean
+  scopeOptions: ScopeOption[]
+  checks: string[]
+  readOnly?: boolean
 }) {
-  const [rows, setRows] = useState(initialRules);
-  const [mode, setMode] = useState<RuleFormMode | null>(null);
-  const [aiMode, setAiMode] = useState<AiRuleFormMode | null>(null);
-  const [only, setOnly] = useState<"all" | "pattern" | "ai">("all");
+  const router = useRouter()
+  const [source, setSource] = useState({ initialRules, disabledPacks })
+  const [rows, setRows] = useState(initialRules)
+  const [packsOff, setPacksOff] = useState(new Set(disabledPacks))
+  if (source.initialRules !== initialRules || source.disabledPacks !== disabledPacks) {
+    setSource({ initialRules, disabledPacks })
+    setRows(initialRules)
+    setPacksOff(new Set(disabledPacks))
+  }
+  const [query, setQuery] = useState("")
+  const [severities, setSeverities] = useState<Set<Severity>>(new Set())
+  const [open, setOpen] = useState<Set<string>>(new Set(["custom", "ai"]))
+  const [mode, setMode] = useState<RuleFormMode | null>(null)
+  const [aiMode, setAiMode] = useState<AiRuleFormMode | null>(null)
+  const [opened, setOpened] = useState(0)
 
-  function onSaved(row: RuleRow, saved: RuleFormMode) {
-    setRows((prev) =>
-      saved.kind === "edit"
-        ? prev.map((r) => (r.id === row.id ? row : r))
-        : [...prev, row],
-    );
-    setMode(null);
+  const sections: Section[] = [
+    { id: "custom", title: "Custom", rows: rows.filter((r) => r.kind === "pattern" && r.origin === "custom") },
+    { id: "ai", title: "AI rules", rows: rows.filter((r) => r.kind === "ai") },
+    ...catalogPacks.map((p) => ({ id: p.id, title: p.title, pack: true, rows: rows.filter((r) => r.kind === "pattern" && r.origin !== "custom" && r.pack === p.id) })),
+  ]
+  const needle = query.trim().toLowerCase()
+  const filtering = Boolean(needle) || severities.size > 0
+  const visible = (row: RuleRow) =>
+    (severities.size === 0 || severities.has(row.body.severity)) &&
+    (!needle || `${row.ruleId} ${ruleName(row)} ${ruleSummary(row)}`.toLowerCase().includes(needle))
+  const shown = sections
+    .map((s) => ({ ...s, hits: s.rows.filter(visible) }))
+    .filter((s) => !filtering || s.hits.length > 0)
+    .filter((s) => !s.pack || s.rows.length > 0)
+
+  function onQuery(next: string) {
+    setQuery(next)
+    const q = next.trim().toLowerCase()
+    if (q) setOpen(new Set(sections.filter((s) => s.rows.some((r) => `${r.ruleId} ${ruleName(r)} ${ruleSummary(r)}`.toLowerCase().includes(q))).map((s) => s.id)))
+  }
+
+  function openEditor(next: RuleFormMode | null, ai: AiRuleFormMode | null = null) {
+    setMode(next)
+    setAiMode(ai)
+    setOpened((n) => n + 1)
+  }
+
+  function upsert(row: RuleRow) {
+    setRows((prev) => (prev.some((r) => r.id === row.id) ? prev.map((r) => (r.id === row.id ? row : r)) : [...prev, row]))
   }
 
   async function toggleRule(row: RuleRow, enabled: boolean) {
-    setRows((prev) =>
-      prev.map((r) => (r.id === row.id ? { ...r, enabled } : r)),
-    );
+    upsert({ ...row, enabled } as RuleRow)
     try {
-      if (row.kind === "ai") {
-        await api(`/api/ai-rules/${row.ruleId}`, {
-          method: "PATCH",
-          body: { ...row.body, enabled },
-        });
-      } else {
-        await api(`/api/rules/${row.id}`, {
-          method: "PATCH",
-          body: { enabled },
-        });
-      }
-      toast.success(`Rule ${row.ruleId} ${enabled ? "enabled" : "disabled"}`);
+      if (row.kind === "ai") await api(`/api/ai-rules/${row.ruleId}`, { method: "PATCH", body: { ...row.body, enabled } })
+      else await api(`/api/rules/${row.id}`, { method: "PATCH", body: { enabled } })
     } catch (error) {
-      setRows((prev) =>
-        prev.map((r) => (r.id === row.id ? { ...r, enabled: !enabled } : r)),
-      );
-      toast.error(
-        error instanceof ApiClientError ? error.message : "Update failed",
-      );
+      upsert(row)
+      toast.error(failure(error))
     }
   }
 
+  async function togglePack(pack: string, enabled: boolean) {
+    const before = { rows, packsOff }
+    const off = new Set(packsOff)
+    if (enabled) off.delete(pack)
+    else off.add(pack)
+    setPacksOff(off)
+    setRows((prev) => prev.map((r) => (r.origin === "catalog" && r.pack === pack ? { ...r, enabled: enabled && !catalogOff.includes(r.id) } : r)))
+    try {
+      await api(`/api/rules/packs/${pack}`, { method: "PATCH", body: { enabled } })
+    } catch (error) {
+      setRows(before.rows)
+      setPacksOff(before.packsOff)
+      toast.error(failure(error))
+    }
+  }
+
+  const close = () => openEditor(null)
+
   return (
-    <div className="mx-auto w-full max-w-5xl px-4 sm:px-6 lg:px-8 space-y-6">
+    <div className="space-y-6">
       <PageHeader
         title="Rules"
-        description="One rule set for your account, evaluated against every push."
+        description={readOnly ? "Read only" : undefined}
+        actions={!readOnly && <RulesActions onNewPattern={() => openEditor({ kind: "create" })} onNewAi={(from) => openEditor(null, { kind: "create", from })} />}
       />
 
-      <TableToolbar
-        count={paging.total}
-        noun="rule"
-        primary={
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button size="sm">
-                <Plus className="size-4" />
-                New rule
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onSelect={() => setMode({ kind: "create" })}>
-                Pattern rule
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => setAiMode({ kind: "create" })}>
-                AI rule
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        }
-      >
-        <Select value={only} onValueChange={(v) => setOnly(v as typeof only)}>
-          <SelectTrigger size="sm" className="w-36">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All rules</SelectItem>
-            <SelectItem value="pattern">Pattern only</SelectItem>
-            <SelectItem value="ai">AI only</SelectItem>
-          </SelectContent>
-        </Select>
-        <ImportRulesDialog />
-        <CatalogDialog
-          rules={[
-            ...catalog.map((rule) => ({ ...rule, kind: "pattern" as const })),
-            ...aiExamples.map((rule) => ({
-              ...rule,
-              pack: "ai-examples",
-              kind: "ai" as const,
-            })),
-          ]}
-          packs={[...catalogPacks, ...AI_EXAMPLE_PACKS]}
-          onSelect={({ kind, pack, ...rule }) =>
-            // `kind` and `pack` are added here for browsing and are not part of
-            // either schema. Both are strict, so carrying them through is a
-            // rejected save.
-            kind === "ai"
-              ? setAiMode({
-                  kind: "create",
-                  from: {
-                    ...(rule as unknown as AiRule),
-                    id: rule.id.replace(/^example-/, ""),
-                  },
-                })
-              : setMode({
-                  kind: "duplicate",
-                  rule: { ...rule, ...(pack ? { pack } : {}) } as unknown as Rule,
-                })
-          }
-        />
-      </TableToolbar>
+      <RulesFilter query={query} onQuery={onQuery} severities={severities} onSeverities={setSeverities} />
 
       {loadError && (
-        <Card>
-          <CardContent className="flex items-center gap-3 text-sm text-muted-foreground">
-            <AlertTriangle className="size-4" />
-            Could not load rules. The database is unreachable.
-          </CardContent>
-        </Card>
+        <Alert>
+          <AlertTriangle />
+          <AlertDescription className="flex flex-wrap items-center gap-3">
+            Could not load rules
+            <Button variant="outline" size="xs" onClick={() => router.refresh()}>
+              Retry
+            </Button>
+          </AlertDescription>
+        </Alert>
       )}
 
-      <TableShell>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Rule</TableHead>
-            <TableHead>Severity</TableHead>
-            <TableHead className="hidden lg:table-cell">Conditions</TableHead>
-            <TableHead className="hidden md:table-cell">Updated</TableHead>
-            <TableHead className="text-right">Enabled</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {rows.length === 0 && (
-            <TableRow>
-              <TableCell
-                colSpan={5}
-                className="text-center text-sm text-muted-foreground"
-              >
-                No rules yet. Create one to start detecting.
-              </TableCell>
-            </TableRow>
-          )}
-          {rows
-            .filter((row) => only === "all" || row.kind === only)
-            .map((row) => {
-              const rule = row.body as {
-                severity?: Severity;
-                description?: string;
-              } & Record<string, unknown>;
-              return (
-                <TableRow key={row.id}>
-                  <TableCell>
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <p className="font-medium">{row.ruleId}</p>
-                      {row.pack ? (
-                        <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
-                          {row.pack}
-                        </span>
-                      ) : null}
-                      {row.kind === "ai" && (
-                        <span className="rounded bg-foreground px-1.5 py-0.5 text-[10px] font-medium text-background">
-                          AI
-                        </span>
-                      )}
-                      {row.kind === "pattern" && row.origin !== "catalog" ? (
-                        <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                          {row.origin === "modified" ? "edited" : "custom"}
-                        </span>
-                      ) : null}
-                    </div>
-                    {rule.description ? (
-                      <p className="max-w-md truncate text-xs text-muted-foreground">
-                        {rule.description}
-                      </p>
-                    ) : null}
-                  </TableCell>
-                  <TableCell>
-                    <SeverityBadge severity={rule.severity ?? "low"} />
-                  </TableCell>
-                  <TableCell className="hidden text-xs text-muted-foreground lg:table-cell">
-                    {conditionSummary(rule)}
-                  </TableCell>
-                  <TableCell className="hidden text-xs text-muted-foreground md:table-cell">
-                    {row.updatedAt ? row.updatedAt.slice(0, 10) : "shipped"}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex items-center justify-end gap-2">
-                      <Switch
-                        checked={row.enabled}
-                        onCheckedChange={(v) => toggleRule(row, v)}
-                      />
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon-sm"
-                            aria-label={`Actions for ${row.ruleId}`}
-                          >
-                            <MoreHorizontal className="size-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem
-                            onSelect={() =>
-                              row.kind === "ai"
-                                ? setAiMode({
-                                    kind: "edit",
-                                    rule: row.body as AiRule,
-                                  })
-                                : setMode({
-                                    kind: "edit",
-                                    docId: row.id,
-                                    rule: row.body as Rule,
-                                  })
-                            }
-                          >
-                            <Pencil className="size-4" />
-                            Edit
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onSelect={() =>
-                              row.kind === "ai"
-                                ? setAiMode({
-                                    kind: "edit",
-                                    rule: row.body as AiRule,
-                                  })
-                                : setMode({
-                                    kind: "duplicate",
-                                    rule: row.body as Rule,
-                                  })
-                            }
-                          >
-                            <Copy className="size-4" />
-                            Duplicate
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              );
-            })}
-        </TableBody>
-      </TableShell>
+      {shown.length === 0 ? (
+        <div className="rounded-lg border py-12 text-center">
+          <p className="text-sm text-muted-foreground">No rules match</p>
+          <Button variant="link" size="sm" onClick={() => (onQuery(""), setSeverities(new Set()))}>
+            Clear filters
+          </Button>
+        </div>
+      ) : (
+        <div className="rounded-lg border">
+          {shown.map((section) => (
+            <RuleSection
+              key={section.id}
+              title={section.title}
+              meta={`${section.rows.length} rule${section.rows.length === 1 ? "" : "s"} · ${section.rows.filter((r) => r.enabled).length} on`}
+              open={open.has(section.id)}
+              onOpenChange={(isOpen) => setOpen((prev) => (isOpen ? new Set(prev).add(section.id) : new Set([...prev].filter((id) => id !== section.id))))}
+              enabled={section.pack ? !packsOff.has(section.id) : undefined}
+              onEnabledChange={section.pack ? (on) => togglePack(section.id, on) : undefined}
+              onCreate={section.pack ? undefined : () => (section.id === "ai" ? openEditor(null, { kind: "create" }) : openEditor({ kind: "create" }))}
+              createLabel={section.id === "ai" ? "New AI rule" : "New custom rule"}
+              readOnly={readOnly}
+            >
+              {section.hits.length === 0 && (
+                <li className="py-2 pr-4 pl-9 text-sm text-muted-foreground">{section.id === "ai" ? "No AI rules" : "No custom rules"}</li>
+              )}
+              {section.hits.map((row) => (
+                <RuleLine
+                  key={row.id}
+                  row={row}
+                  readOnly={readOnly}
+                  locked={row.origin === "catalog" && row.pack !== null && packsOff.has(row.pack)}
+                  onOpen={() => (row.kind === "ai" ? openEditor(null, { kind: "edit", rule: row.body }) : openEditor({ kind: "edit", row }))}
+                  onToggle={(on) => toggleRule(row, on)}
+                />
+              ))}
+            </RuleSection>
+          ))}
+        </div>
+      )}
 
-      <Pager
-        page={paging.page}
-        perPage={paging.perPage}
-        total={paging.total}
-        hasMore={paging.hasMore}
-        basePath="/dashboard/rules"
-      />
-
-      <Dialog
-        open={aiMode !== null}
-        onOpenChange={(open) => !open && setAiMode(null)}
-      >
-        <DialogContent className="w-[calc(100%-2rem)] max-w-2xl gap-6 p-6 sm:max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>
-              {aiMode?.kind === "edit"
-                ? `Edit ${aiMode.rule.id}`
-                : "New AI rule"}
-            </DialogTitle>
-          </DialogHeader>
-          {aiMode && (
-            <AiRuleForm
-              key={
-                aiMode.kind === "edit"
-                  ? aiMode.rule.id
-                  : (aiMode.from?.id ?? "create")
-              }
-              mode={aiMode}
-              keys={aiKeys}
-              onSaved={() => {
-                setAiMode(null);
-                window.location.reload();
-              }}
-            />
-          )}
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
-        open={mode !== null}
-        onOpenChange={(open) => !open && setMode(null)}
-      >
-        <DialogContent
-          className="max-h-[85vh] w-[calc(100%-2rem)] max-w-3xl gap-6 overflow-y-auto p-6 sm:max-w-3xl"
-        >
-          <DialogHeader>
-            <DialogTitle>
-              {mode?.kind === "edit"
-                ? `Edit ${mode.rule.id}`
-                : mode?.kind === "duplicate"
-                  ? `Duplicate ${mode.rule.id}`
-                  : "New rule"}
-            </DialogTitle>
-          </DialogHeader>
+      <Sheet open={mode !== null || aiMode !== null} onOpenChange={(isOpen) => !isOpen && close()}>
+        <SheetContent aria-describedby={undefined} className="w-full! gap-0 p-0 sm:max-w-2xl!">
           {mode && (
             <RuleForm
-              key={
-                mode.kind === "create"
-                  ? "create"
-                  : `${mode.kind}:${mode.rule.id}`
-              }
+              key={opened}
               mode={mode}
+              readOnly={readOnly}
               scopeOptions={scopeOptions}
-              onSaved={onSaved}
+              checks={checks}
+              onClose={close}
+              onSaved={(row) => (upsert(row), close())}
+              onRemoved={(id, restored) => {
+                if (restored) upsert(restored)
+                else setRows((prev) => prev.filter((r) => r.id !== id))
+                close()
+              }}
+              onDuplicate={(rule) => openEditor({ kind: "create", from: { ...rule, pack: undefined, id: `${rule.id}-copy`.slice(0, 64) } })}
             />
           )}
-        </DialogContent>
-      </Dialog>
+          {aiMode && (
+            <>
+              <SheetTitle className="border-b p-4 pr-12 text-sm font-normal text-muted-foreground sm:px-6">
+                {aiMode.kind === "edit" ? <span className="font-mono">{aiMode.rule.id}</span> : "New AI rule"}
+                {readOnly && " · read only"}
+              </SheetTitle>
+              <fieldset disabled={readOnly} className="min-h-0 flex-1 overflow-y-auto p-4 sm:px-6">
+                <AiRuleForm
+                  key={opened}
+                  mode={aiMode}
+                  keys={aiKeys}
+                  onSaved={() => {
+                    close()
+                    router.refresh()
+                  }}
+                />
+              </fieldset>
+            </>
+          )}
+        </SheetContent>
+      </Sheet>
     </div>
-  );
-}
-
-function conditionSummary(rule: Record<string, unknown>): string {
-  const parts: string[] = [];
-  if (rule.when) parts.push("payload");
-  const on = rule.on as string[] | undefined;
-  if (on?.length === 1) parts.push(on[0] === "push" ? "pushes only" : "pull requests only");
-  if (rule.paths) parts.push(`paths (${(rule.paths as string[]).length})`);
-  if (rule.added_lines) parts.push("diff regex");
-  if (rule.ai) parts.push("ai review");
-  return parts.join(" · ") || "none";
+  )
 }

@@ -1,8 +1,14 @@
-import { db, grantRepoAccess, replaceRepoAccess, revokeRepoAccess } from "@/lib/db"
-import { MAX_STORED_BRANCHES, repos } from "@/lib/db"
-import { fetchRepoBranches, listRepoCollaborators, listTeamMembers, listTeamRepos } from "@/lib/github"
+import {
+  grantRepoAccess,
+  MAX_STORED_BRANCHES,
+  replaceOrgMembers,
+  replaceRepoAccess,
+  revokeRepoAccess,
+  saveRepo,
+} from "@/lib/db"
+import { fetchRepoBranches, listOrgMembers, listRepoCollaborators, listTeamMembers, listTeamRepos } from "@/lib/github"
+import { AppError } from "@/lib/errors"
 import { logger } from "@/lib/logger"
-import { ownerOf } from "@/lib/finding"
 import { syncRepoPullRequests } from "@/lib/pull-requests"
 
 // Keeps the repo-access projection current.
@@ -21,25 +27,18 @@ export async function syncRepoAccess(installationId: number, repo: string): Prom
   return collaborators.length
 }
 
-// Read a repository's branches once and store them. From here the create,.
+// Read a repository's branches once and store them. After that, create and
+// delete webhooks keep the list current.
 export async function syncRepoBranches(installationId: number, repo: string): Promise<void> {
   const fresh = await fetchRepoBranches(installationId, repo, MAX_STORED_BRANCHES)
-  await repos().updateOne(
-    { _id: repo },
-    {
-      $set: {
-        org: ownerOf(repo),
-        defaultBranch: fresh.defaultBranch,
-        branches: fresh.branches.slice(0, MAX_STORED_BRANCHES),
-        branchesTruncated: fresh.branches.length > MAX_STORED_BRANCHES,
-        archived: fresh.archived ?? false,
-        private: fresh.private ?? true,
-        syncedAt: new Date(),
-        updatedAt: new Date(),
-      },
-    },
-    { upsert: true },
-  )
+  await saveRepo(repo, {
+    defaultBranch: fresh.defaultBranch,
+    branches: fresh.branches.slice(0, MAX_STORED_BRANCHES),
+    branchesTruncated: fresh.branches.length > MAX_STORED_BRANCHES,
+    archived: fresh.archived ?? false,
+    private: fresh.private ?? true,
+    syncedAt: new Date(),
+  })
 }
 
 // Everything a repository needs stored: who can read it, its branches, its open pull requests.
@@ -51,21 +50,36 @@ async function syncRepo(installationId: number, repo: string): Promise<void> {
   ])
 }
 
-// Repositories are synced in small batches. A large installation would otherwise.
+// Repositories are synced in small batches so one install does not open
+// hundreds of GitHub requests at once.
 const SYNC_BATCH = 5
 
+// A repository that is gone is logged and skipped. A rate limit is rethrown
+// after the rest, so the job is retried rather than leaving a hole.
+// Every repository is attempted; any failure then fails the job, so it retries
+// and is recorded rather than reporting a sync that left repositories unread.
 export async function syncManyRepos(installationId: number, repos: string[]): Promise<void> {
+  let limited: AppError | null = null
+  let failed: { repo: string; error: unknown }[] = []
   for (let i = 0; i < repos.length; i += SYNC_BATCH) {
-    await Promise.all(
-      repos.slice(i, i + SYNC_BATCH).map((repo) =>
-        syncRepo(installationId, repo).catch((error: unknown) => {
-          logger.warn("repo_sync_failed", {
-            repo,
-            error: error instanceof Error ? error.message : String(error),
-          })
-        }),
-      ),
-    )
+    const batch = repos.slice(i, i + SYNC_BATCH)
+    const results = await Promise.allSettled(batch.map((repo) => syncRepo(installationId, repo)))
+    results.forEach((result, index) => {
+      if (result.status === "fulfilled") return
+      const error = result.reason
+      if (error instanceof AppError && error.code === "rate_limited") limited ??= error
+      failed = [...failed, { repo: batch[index], error }]
+      logger.warn("repo_sync_failed", {
+        repo: batch[index],
+        error: error instanceof Error ? error.message : String(error),
+      })
+    })
+  }
+  if (limited) throw limited
+  if (failed.length > 0) {
+    throw new AppError("upstream_github", `${failed.length} of ${repos.length} repositories did not sync: ${failed.map((f) => f.repo).join(", ")}`, {
+      cause: failed[0].error,
+    })
   }
 }
 
@@ -109,21 +123,8 @@ export async function syncTeamMember(
   logger.info("team_member_access_synced", { team: grant, login, action, repos: repos.length })
 }
 
-// Left the organization: every grant in it goes, whatever its source.
-export async function revokeOrgAccess(org: string, login: string): Promise<void> {
-  const result = await db.repoAccess().deleteMany({ login: login.toLowerCase(), org })
-  logger.info("org_access_revoked", { org, login, removed: result.deletedCount })
-}
-
-// Correct drift. GitHub does not emit an event for every way access can change,.
-export async function reconcileAccess(limit = 25): Promise<number> {
-  const active = await db.installations().find({ active: true }).toArray()
-  let synced = 0
-  for (const installation of active) {
-    const repos = (installation.repos ?? []).slice(0, limit)
-    await syncManyRepos(installation.installationId, repos)
-    synced += repos.length
-  }
-  logger.info("access_reconciled", { installations: active.length, repos: synced })
-  return synced
+export async function syncOrgMembers(installationId: number, org: string): Promise<void> {
+  const { members, truncated } = await listOrgMembers(installationId, org)
+  await replaceOrgMembers(org, members)
+  logger.info("org_members_synced", { org, members: members.length, truncated })
 }

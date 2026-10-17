@@ -1,38 +1,28 @@
-import { NextResponse } from "next/server"
-import { db } from "@/lib/db"
+import { deleteAiRule, updateAiRule } from "@/lib/db"
 import { AppError } from "@/lib/errors"
 import { logger } from "@/lib/logger"
-import { withErrorHandler } from "@/lib/route"
-import { requireManagedTenant } from "@/lib/tenant"
+import { respond, userRoute } from "@/lib/route"
+import { requireAdmin } from "@/lib/tenant"
 import { aiRuleSchema } from "@/schemas/ai-rule"
+import { aiRuleOut, nothingOut } from "@/schemas/output"
 
-
-export const PATCH = withErrorHandler("/api/ai-rules/[id]", async (request, { params }) => {
+export const PATCH = userRoute("/api/ai-rules/[id]", async (request, { params }) => {
   const { id } = await params
   const rule = aiRuleSchema.parse(await request.json())
-  const { owner, login } = await requireManagedTenant()
+  const { org, login } = await requireAdmin()
+  if (rule.id !== id) throw new AppError("validation_failed", "Rule id cannot be changed; duplicate it instead")
 
-  if (rule.id !== id) {
-    throw new AppError("validation_failed", "Rule id cannot be changed; duplicate it instead")
+  if (!(await updateAiRule(org, id, { body: rule, enabled: rule.enabled }))) {
+    throw new AppError("not_found", "Rule not found")
   }
-
-  const result = await db.aiRules().updateOne(
-    { owner, ruleId: id },
-    { $set: { body: rule, enabled: rule.enabled, updatedAt: new Date() } },
-  )
-  if (result.matchedCount === 0) throw new AppError("not_found", "Rule not found")
-
-  logger.info("ai_rule_updated", { owner, ruleId: id, by: login })
-  return NextResponse.json({ data: rule })
+  logger.info("ai_rule_updated", { org, ruleId: id, by: login })
+  return respond(aiRuleOut, rule)
 })
 
-export const DELETE = withErrorHandler("/api/ai-rules/[id]", async (_request, { params }) => {
+export const DELETE = userRoute("/api/ai-rules/[id]", async (_request, { params }) => {
   const { id } = await params
-  const { owner, login } = await requireManagedTenant()
-
-  const result = await db.aiRules().deleteOne({ owner, ruleId: id })
-  if (result.deletedCount === 0) throw new AppError("not_found", "Rule not found")
-
-  logger.info("ai_rule_deleted", { owner, ruleId: id, by: login })
-  return NextResponse.json({ data: null })
+  const { org, login } = await requireAdmin()
+  if (!(await deleteAiRule(org, id))) throw new AppError("not_found", "Rule not found")
+  logger.info("ai_rule_deleted", { org, ruleId: id, by: login })
+  return respond(nothingOut, null)
 })

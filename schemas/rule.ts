@@ -1,99 +1,74 @@
 import { z } from "zod";
+import { advancedSchema, MAX_RESPONSES, responseSchema } from "./rule-advanced";
+import { CHANGE_SOURCES, CHANGE_TYPES, DESCRIPTION_MAX, glob, kebab, safeRegex, SEVERITIES, whenSchema } from "./rule-fields";
 
-export const SEVERITIES = ["low", "medium", "high", "critical"] as const;
-export const CHANGE_TYPES = ["added", "modified", "removed"] as const;
+export * from "./rule-fields";
 
-// Events a rule runs on. Absent means both.
-export const CHANGE_SOURCES = ["push", "pull_request"] as const;
+const MAX_PATTERNS = 20;
+export const MAX_GROUPS = 10;
+export const MAX_FILE_SETS = 5;
 
-const REGEX_MAX_LENGTH = 500;
-const GLOB_MAX_LENGTH = 256;
+// One pattern, or several that each match on their own (OR).
+const patternList = z.union([safeRegex, z.array(safeRegex).min(1).max(MAX_PATTERNS)]);
 
-const glob = z.string().min(1).max(GLOB_MAX_LENGTH);
+// The conditions one group ANDs together. A rule is one group (these fields at
+// the top level) or several under `any_of`, any of which may match.
+const conditionFields = {
+  paths: z.array(glob).min(1).max(100).optional(),
+  all_of: z.array(z.array(glob).min(1).max(50)).min(2).max(MAX_FILE_SETS).optional(),
+  exclude_paths: z.array(glob).min(1).max(100).optional(),
+  change_type: z.array(z.enum(CHANGE_TYPES)).min(1).max(3).optional(),
+  when: whenSchema.optional(),
+  added_lines: patternList.optional(),
+  commit_message: patternList.optional(),
+  unicode_risk: z.enum(["controls", "confusables"]).optional(),
+};
 
-const safeRegex = z
-  .string()
-  .min(1)
-  .max(REGEX_MAX_LENGTH)
-  .superRefine((value, ctx) => {
-    try {
-      new RegExp(value);
-    } catch {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Invalid regular expression",
-      });
-    }
-  });
+type Conditions = { [K in keyof typeof conditionFields]?: z.infer<(typeof conditionFields)[K]> };
 
-const hour = z.number().int().min(0).max(23);
+export function hasCondition(c: Conditions): boolean {
+  return Boolean(c.paths || c.all_of || c.when || c.added_lines || c.commit_message || c.unicode_risk);
+}
 
-const hourRange = z
-  .object({
-    between: z.tuple([hour, hour]).optional(),
-    not_between: z.tuple([hour, hour]).optional(),
-  })
+const excludeNeedsPaths = (c: Conditions) => !c.exclude_paths || Boolean(c.paths || c.all_of);
+
+export const conditionGroupSchema = z
+  .object(conditionFields)
   .strict()
-  .refine((v) => (v.between ? 1 : 0) + (v.not_between ? 1 : 0) === 1, {
-    message: "Provide exactly one of between or not_between",
-  });
+  .refine(hasCondition, { message: "A group needs at least one condition" })
+  .refine(excludeNeedsPaths, { message: "exclude_paths requires paths or all_of" });
 
-export const whenSchema = z
-  .object({
-    forced: z.boolean().optional(),
-    sender_first_push: z.boolean().optional(),
-    branch_created: z.boolean().optional(),
-    branch_deleted: z.boolean().optional(),
-    author_mismatch: z.boolean().optional(),
-    unreviewed: z.boolean().optional(),
-    pr_draft: z.boolean().optional(),
-    pr_opened: z.boolean().optional(),
-    hour_utc: hourRange.optional(),
-  })
-  .strict()
-  .refine((v) => Object.keys(v).length > 0, { message: "Empty when block" });
+// `advanced` ANDs with the pattern conditions; `responses` run when the rule fires.
+export const ruleFields = {
+  id: kebab,
+  description: z.string().max(DESCRIPTION_MAX).optional(),
+  pack: kebab.max(32).optional(),
+  severity: z.enum(SEVERITIES),
+  enabled: z.boolean().default(true),
+  on: z.array(z.enum(CHANGE_SOURCES)).min(1).max(2).optional(),
+  repos: z.array(glob).min(1).max(50).optional(),
+  branches: z.array(glob).min(1).max(50).optional(),
+  ...conditionFields,
+  any_of: z.array(conditionGroupSchema).min(1).max(MAX_GROUPS).optional(),
+  advanced: advancedSchema.optional(),
+  responses: z.array(responseSchema).min(1).max(MAX_RESPONSES).optional(),
+};
 
-export const ruleSchema = z
-  .object({
-    id: z
-      .string()
-      .max(64)
-      .regex(
-        /^[a-z0-9]+(-[a-z0-9]+)*$/,
-        "Use kebab-case: lowercase letters, digits, hyphens",
-      ),
-    description: z.string().max(500).optional(),
-    pack: z
-      .string()
-      .max(32)
-      .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, "Use kebab-case")
-      .optional(),
-    severity: z.enum(SEVERITIES),
-    enabled: z.boolean().default(true),
-    on: z.array(z.enum(CHANGE_SOURCES)).min(1).max(2).optional(),
-    repos: z.array(glob).min(1).max(50).optional(),
-    branches: z.array(glob).min(1).max(50).optional(),
-    paths: z.array(glob).min(1).max(100).optional(),
-    all_of: z.array(z.array(glob).min(1).max(50)).min(2).max(5).optional(),
-    exclude_paths: z.array(glob).min(1).max(100).optional(),
-    change_type: z.array(z.enum(CHANGE_TYPES)).min(1).max(3).optional(),
-    when: whenSchema.optional(),
-    added_lines: safeRegex.optional(),
-    commit_message: safeRegex.optional(),
-    unicode_risk: z.enum(["controls", "confusables"]).optional(),
-  })
-  .strict()
-  .refine(
-    (r) =>
-      r.paths || r.all_of || r.when || r.added_lines || r.commit_message || r.unicode_risk,
-    {
-      message:
-        "Rule needs at least one condition: paths, all_of, when, added_lines, commit_message, or unicode_risk",
-    },
-  )
-  .refine((r) => !r.exclude_paths || r.paths || r.all_of, {
-    message: "exclude_paths requires paths or all_of",
-  });
+type RuleShape = Conditions & { any_of?: unknown; advanced?: unknown };
+
+export function ruleChecks(r: RuleShape, ctx: z.RefinementCtx): void {
+  if (!hasCondition(r) && !r.any_of && !r.advanced) {
+    ctx.addIssue({
+      code: "custom",
+      message: "Rule needs at least one condition: paths, all_of, when, added_lines, commit_message, unicode_risk, any_of, or advanced",
+    });
+  }
+  if (!excludeNeedsPaths(r)) ctx.addIssue({ code: "custom", message: "exclude_paths requires paths or all_of" });
+}
+
+export const ruleSchema = z.object(ruleFields).strict().superRefine(ruleChecks);
+
+export type ConditionGroup = z.infer<typeof conditionGroupSchema>;
 
 export const rulesFileSchema = z.array(ruleSchema).superRefine((rules, ctx) => {
   const seen = new Set<string>();

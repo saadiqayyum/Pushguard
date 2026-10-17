@@ -1,9 +1,9 @@
 import { stringify } from "yaml"
-import { db } from "@/lib/db"
+import { rulesFor } from "@/lib/db"
 import { catalogRules } from "@/lib/rules/catalog"
-import { withErrorHandler } from "@/lib/route"
-import { requireManagedTenant } from "@/lib/tenant"
-import type { Rule } from "@/schemas/rule"
+import { userRoute } from "@/lib/route"
+import { requireTenant } from "@/lib/tenant"
+import { ruleSchema, type Rule } from "@/schemas/rule"
 
 const HEADER = [
   "# Pushguard rules.",
@@ -16,27 +16,20 @@ const HEADER = [
   "",
 ].join("\n")
 
-// Rules as YAML, for editing outside the app and importing back.
-export const GET = withErrorHandler("/api/rules/export", async (request) => {
+export const GET = userRoute("/api/rules/export", async (request) => {
   const example = new URL(request.url).searchParams.get("example") === "1"
-
   let rules: Rule[] = catalogRules
-  let filename = "pushguard-rules.example.yaml"
-
   if (!example) {
-    const { owner } = await requireManagedTenant()
-    const docs = await db.rules()
-      .find({ owner })
-      .sort({ ruleId: 1 })
-      .toArray()
-    rules = docs.map((doc) => doc.body)
-    filename = "pushguard-rules.yaml"
+    const { org } = await requireTenant()
+    rules = (await rulesFor(org))
+      .sort((a, b) => a.ruleId.localeCompare(b.ruleId))
+      .map((doc) => ruleSchema.parse(doc.body))
   }
 
   return new Response(HEADER + stringify(rules), {
     headers: {
       "Content-Type": "text/yaml; charset=utf-8",
-      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Content-Disposition": `attachment; filename="${example ? "pushguard-rules.example.yaml" : "pushguard-rules.yaml"}"`,
     },
   })
 })

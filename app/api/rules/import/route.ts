@@ -1,63 +1,46 @@
-import { NextResponse } from "next/server"
 import { parse as parseYaml } from "yaml"
-import { db, type RuleDoc } from "@/lib/db"
-import { logger } from "@/lib/logger"
+import { recordRuleVersion, ruleFor, rulesFor, saveRule } from "@/lib/db"
 import { AppError } from "@/lib/errors"
-import { withErrorHandler } from "@/lib/route"
-import { requireManagedTenant } from "@/lib/tenant"
-import { importRulesBody } from "@/schemas/api"
+import { logger } from "@/lib/logger"
+import { respond, userRoute } from "@/lib/route"
+import { requireAdmin } from "@/lib/tenant"
+import { importRulesBody, MAX_IMPORTED_RULES, MAX_RULES_PER_ORG } from "@/schemas/api"
+import { importResultOut } from "@/schemas/output"
 import { checkedRulesFileSchema } from "@/schemas/rule-safety"
 
 // Regex safety checks may take seconds each; see schemas/rule-safety.ts.
 export const maxDuration = 60
 
-// Bulk import, YAML or JSON.
-export const POST = withErrorHandler("/api/rules/import", async (request) => {
+export const POST = userRoute("/api/rules/import", async (request) => {
   const { content } = importRulesBody.parse(await request.json())
-  const { login, owner } = await requireManagedTenant()
+  const { login, org } = await requireAdmin()
 
   let parsed: unknown
   try {
     parsed = parseYaml(content)
-  } catch (error) {
-    throw new AppError("validation_failed", `Could not read the file: ${(error as Error).message}`)
+  } catch {
+    throw new AppError("validation_failed", "Could not read the file as YAML or JSON")
   }
-
   const rules = await checkedRulesFileSchema.parseAsync(parsed)
   if (rules.length === 0) throw new AppError("validation_failed", "No rules in that file")
-
-  const versions = db.ruleVersions()
-  const now = new Date()
-  let created = 0
-  let updated = 0
-
-  for (const rule of rules) {
-    const existing = await db.rules().findOne({ owner, ruleId: rule.id })
-    const _id = existing?._id ?? crypto.randomUUID()
-
-    const doc: RuleDoc = {
-      _id,
-      owner,
-      ruleId: rule.id,
-      body: rule,
-      enabled: rule.enabled,
-      createdBy: existing?.createdBy ?? login,
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now,
-    }
-    await db.rules().replaceOne({ _id }, doc, { upsert: true })
-    await versions.insertOne({
-      _id: crypto.randomUUID(),
-      ruleId: _id,
-      body: rule,
-      action: existing ? "updated" : "created",
-      changedBy: login,
-      changedAt: now,
-    })
-    if (existing) updated++
-    else created++
+  if (rules.length > MAX_IMPORTED_RULES) {
+    throw new AppError("validation_failed", `At most ${MAX_IMPORTED_RULES} rules per import`)
   }
 
-  logger.info("rules_imported", { owner, by: login, created, updated })
-  return NextResponse.json({ data: { created, updated, total: rules.length } })
+  const stored = new Set((await rulesFor(org)).map((rule) => rule.ruleId))
+  const adding = rules.filter((rule) => !stored.has(rule.id)).length
+  if (stored.size + adding > MAX_RULES_PER_ORG) {
+    throw new AppError("validation_failed", `This import would exceed ${MAX_RULES_PER_ORG} stored rules per organization`)
+  }
+
+  let created = 0
+  for (const rule of rules) {
+    const existing = await ruleFor(org, rule.id)
+    await saveRule(org, rule.id, { body: rule, enabled: rule.enabled, createdBy: login })
+    await recordRuleVersion({ org, ruleId: rule.id, body: rule, action: existing ? "updated" : "created", changedBy: login })
+    if (!existing) created++
+  }
+
+  logger.info("rules_imported", { org, by: login, created, updated: rules.length - created })
+  return respond(importResultOut, { created, updated: rules.length - created, total: rules.length })
 })

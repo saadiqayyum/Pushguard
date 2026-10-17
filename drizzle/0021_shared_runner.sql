@@ -1,0 +1,2 @@
+ALTER TABLE "app"."runner_jobs" ADD COLUMN "runner_installation_id" bigint;--> statement-breakpoint
+CREATE INDEX "runner_jobs_org_created_at_index" ON "app"."runner_jobs" USING btree ("org","created_at");

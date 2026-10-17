@@ -1,0 +1,1 @@
+ALTER TABLE "app"."installations" DROP COLUMN "runner_repo";

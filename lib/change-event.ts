@@ -29,6 +29,18 @@ export function changedFilesOf(payload: PushPayload): ChangedFile[] {
   return [...files.entries()].map(([path, changeType]) => ({ path, changeType }))
 }
 
+const COMPARE_STATUS: Record<string, ChangedFile["changeType"]> = {
+  added: "added",
+  removed: "removed",
+  renamed: "added",
+  copied: "added",
+}
+
+// The compare API's file statuses, as the engine's change types.
+export function changedFilesOfCompare(files: { path: string; status: string }[]): ChangedFile[] {
+  return files.map((file) => ({ path: file.path, changeType: COMPARE_STATUS[file.status] ?? "modified" }))
+}
+
 export function fromPush(payload: PushPayload): ChangeEvent {
   return {
     repo: payload.repository.full_name,

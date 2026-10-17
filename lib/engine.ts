@@ -1,6 +1,8 @@
 import { hasConfusables } from "anti-trojan-source";
 import picomatch from "picomatch";
-import { CHANGE_SOURCES, type ChangeType, type Rule } from "@/schemas/rule";
+import type { FileLines } from "@/lib/diff-lines";
+import { neutralizeEmoji } from "@/lib/unicode";
+import { CHANGE_SOURCES, hasCondition, type ChangeType, type Rule } from "@/schemas/rule";
 
 export type ChangedFile = { path: string; changeType: ChangeType };
 
@@ -43,19 +45,43 @@ export function normalizeForMatching(line: string): string {
     .trim();
 }
 
+// One flat rule per condition group, sharing the rule's id, severity and scope.
+// A rule with no `any_of` is its own single variant.
+export function ruleVariants(rule: Rule): Rule[] {
+  if (!rule.any_of) return [rule];
+  const { any_of, paths, all_of, exclude_paths, change_type, when, added_lines, commit_message, unicode_risk, ...shared } = rule;
+  const top = { paths, all_of, exclude_paths, change_type, when, added_lines, commit_message, unicode_risk };
+  const groups = hasCondition(top) ? [top, ...any_of] : any_of;
+  return groups.map((group) => ({ ...shared, ...group }));
+}
+
+// A rule with advanced conditions needs push data the engine does not hold, so
+// it is evaluated by lib/rules/advanced on pushes and skipped everywhere else.
+const variantsOf = (rules: Rule[]) => rules.filter((rule) => !rule.advanced).flatMap(ruleVariants);
+
+// Every matching variant: content confirmation may reject one and accept another.
 export function evaluateRules(
   rules: Rule[],
   context: PushContext,
 ): RuleMatch[] {
   const matches: RuleMatch[] = [];
-  for (const rule of rules) {
-    const match = evaluateRule(rule, context);
+  for (const variant of variantsOf(rules)) {
+    const match = evaluateVariant(variant, context);
     if (match) matches.push(match);
   }
   return matches;
 }
 
-export function evaluateRule(
+export function evaluateRule(rule: Rule, context: PushContext): RuleMatch | null {
+  return evaluateRules([rule], context)[0] ?? null;
+}
+
+export function patternsOf(value: string | string[] | undefined): RegExp[] {
+  if (value === undefined) return [];
+  return (Array.isArray(value) ? value : [value]).map((source) => new RegExp(source));
+}
+
+function evaluateVariant(
   rule: Rule,
   context: PushContext,
 ): RuleMatch | null {
@@ -66,10 +92,11 @@ export function evaluateRule(
 
   let matchedMessages: string[] = [];
   if (rule.commit_message) {
-    const pattern = new RegExp(rule.commit_message);
-    matchedMessages = context.commitMessages.filter((message) =>
-      pattern.test(normalizeForMatching(message.split("\n")[0])),
-    );
+    const patterns = patternsOf(rule.commit_message);
+    matchedMessages = context.commitMessages.filter((message) => {
+      const subject = normalizeForMatching(message.split("\n")[0]);
+      return patterns.some((pattern) => pattern.test(subject));
+    });
     if (matchedMessages.length === 0) return null;
   }
 
@@ -101,7 +128,7 @@ export function runsOn(rule: Pick<Rule, "on">, context: Pick<PushContext, "event
 
 // A scan reads committed code, not a push event. Rules that ask about the push.
 export function scannableRules(rules: Rule[]): Rule[] {
-  return rules
+  return variantsOf(rules)
     .filter(
       (rule) =>
         !rule.when &&
@@ -114,9 +141,10 @@ export function scannableRules(rules: Rule[]): Rule[] {
     );
 }
 
-// A force push is inspected for content that *vanished*, never for paths that.
+// A force push is inspected for content that *vanished*, never for paths that
+// changed: a rewrite touches every path it moves, so path rules would all fire.
 export function erasureRules(rules: Rule[]): Rule[] {
-  return rules
+  return variantsOf(rules)
     .filter(
       (rule) =>
         (rule.added_lines || rule.unicode_risk) &&
@@ -127,16 +155,21 @@ export function erasureRules(rules: Rule[]): Rule[] {
 }
 
 // Added lines that were reachable from the old tip and are not reachable from
-// the new one.
-export function erasedLines(orphaned: string[], surviving: string[]): string[] {
-  const kept = new Set(surviving.map((line) => line.trim()));
-  const seen = new Set<string>();
-  return orphaned.filter((line) => {
-    const key = line.trim();
-    if (key === "" || kept.has(key) || seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+// the new one. A line that survives in any file counts as kept: rewrites move code.
+export function erasedLines(orphaned: FileLines, surviving: FileLines): FileLines {
+  const kept = new Set([...surviving.values()].flat().map((line) => line.trim()));
+  const erased: FileLines = new Map();
+  for (const [path, lines] of orphaned) {
+    const seen = new Set<string>();
+    const gone = lines.filter((line) => {
+      const key = line.trim();
+      if (key === "" || kept.has(key) || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    if (gone.length > 0) erased.set(path, gone);
+  }
+  return erased;
 }
 
 // Does any rule actually ask whether this push bypassed review?
@@ -145,7 +178,7 @@ export function needsReviewCheck(
   repo: string,
   branch: string,
 ): boolean {
-  return rules.some(
+  return rules.flatMap(ruleVariants).some(
     (rule) =>
       rule.when?.unreviewed !== undefined &&
       (!rule.repos || matchesAny(rule.repos, repo)) &&
@@ -166,17 +199,17 @@ export function matchAddedLines(
 ): string[] {
   if (!rule.added_lines) return [];
   const { raw, normalized } = Array.isArray(lines) ? prepareLines(lines) : lines;
-  const pattern = new RegExp(rule.added_lines);
-  return raw.filter(
-    (line, i) => pattern.test(line) || pattern.test(normalized[i]),
+  const patterns = patternsOf(rule.added_lines);
+  return raw.filter((line, i) =>
+    patterns.some((pattern) => pattern.test(line) || pattern.test(normalized[i])),
   );
 }
 
 // Added lines carrying Unicode that makes them read differently than they run.
 export function matchUnicodeRisk(rule: Rule, addedLines: string[]): string[] {
   if (!rule.unicode_risk) return [];
-  const sourceText = addedLines.join("\n");
   const extended = rule.unicode_risk === "confusables";
+  const sourceText = neutralizeEmoji(addedLines.join("\n"), extended);
 
   if (!hasConfusables({ sourceText, extended })) return [];
 
@@ -197,32 +230,48 @@ export function matchUnicodeRisk(rule: Rule, addedLines: string[]): string[] {
 
 export type ConfirmedMatch = RuleMatch & { matchedLines: string[] };
 
+function contentHits(rule: Rule, lines: ScannedLines): string[] {
+  const hits = rule.added_lines ? matchAddedLines(rule, lines) : lines.raw;
+  return rule.unicode_risk && hits.length > 0 ? matchUnicodeRisk(rule, hits) : hits;
+}
+
 // Fail-open: a content rule with no diff available stays flagged rather than
-// silently dropping a detection.
+// silently dropping a detection. A path-scoped variant reads only its own files.
 export function confirmContentMatches(
   matches: RuleMatch[],
-  addedLines: string[] | null,
+  addedLines: FileLines | null,
 ): ConfirmedMatch[] {
   const confirmed: ConfirmedMatch[] = [];
+  const done = new Set<string>();
 
-  const prepared = addedLines === null ? null : prepareLines(addedLines);
+  const prepared =
+    addedLines === null
+      ? null
+      : [...addedLines].map(([path, lines]) => [path, prepareLines(lines)] as const);
 
   for (const match of matches) {
     const { rule } = match;
+    if (done.has(rule.id)) continue;
     if ((!rule.added_lines && !rule.unicode_risk) || prepared === null) {
       confirmed.push({ ...match, matchedLines: [] });
+      done.add(rule.id);
       continue;
     }
 
-    let lines = prepared.raw;
-    if (rule.added_lines) {
-      lines = matchAddedLines(rule, prepared);
-      if (lines.length === 0) continue;
+    const scope = rule.paths || rule.all_of ? new Set(match.matchedFiles) : null;
+    const matchedFiles: string[] = [];
+    const matchedLines: string[] = [];
+    for (const [path, lines] of prepared) {
+      if (scope && !scope.has(path)) continue;
+      const hits = contentHits(rule, lines);
+      if (hits.length === 0) continue;
+      matchedFiles.push(path);
+      matchedLines.push(...hits);
     }
-    const matchedLines = rule.unicode_risk
-      ? matchUnicodeRisk(rule, lines)
-      : lines;
-    if (matchedLines.length > 0) confirmed.push({ ...match, matchedLines });
+    if (matchedLines.length > 0) {
+      confirmed.push({ ...match, matchedFiles, matchedLines });
+      done.add(rule.id);
+    }
   }
   return confirmed;
 }

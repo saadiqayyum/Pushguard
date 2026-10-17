@@ -1,24 +1,19 @@
 import type { Metadata } from "next"
-import Link from "next/link"
+import { CONTAINER } from "@/components/app-header"
+import { CTA } from "@/components/site-chrome"
+import { SignInLink } from "@/components/signin-dialog"
 
 export const metadata: Metadata = { title: "Installation requested. Pushguard" }
 
-// GitHub returns setup_action=request when the installer is not an owner of the.
+// GitHub returns setup_action=request when the installer is not an org owner.
 export default function InstallPendingPage() {
   return (
-    <div className="mx-auto w-full max-w-5xl px-4 sm:px-6 lg:px-8 pt-20 pb-8">
+    <div className={`${CONTAINER} pt-14 sm:pt-20`}>
       <p className="eyebrow">Waiting on an owner</p>
-      <h1 className="mt-5 text-balance">Your request went to the organization owners.</h1>
-      <p className="mt-6 text-[1.0625rem] leading-relaxed text-[var(--ink-soft)]">
-        GitHub asks an owner to approve apps installed by members. Nothing is watching yet, once
-        someone approves it, sign in and the dashboard will have your repositories in it.
-      </p>
-      <Link
-        href="/signin"
-        className="mt-8 inline-flex h-12 items-center rounded-xl bg-[var(--brand)] px-6 font-sans text-[0.9375rem] font-medium text-[var(--paper)] transition-opacity hover:opacity-90"
-      >
+      <h1 className="mt-5 text-balance">Request sent to the organization owners.</h1>
+      <SignInLink href="/dashboard" className={`${CTA} mt-8`}>
         Sign in
-      </Link>
+      </SignInLink>
     </div>
   )
 }

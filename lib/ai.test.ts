@@ -32,20 +32,18 @@ test("a verdict cannot ping GitHub users or spread across lines", () => {
   assert.ok(out.length <= 600)
 })
 
+// Both model paths are checked: a guard covering only the first passes while the
+// second ships unsanitised text.
 test("every path a model summary takes is sanitised before it leaves", () => {
-  // Not the caller's job: the caller that forgets is the one that ships it.
-  // Both paths are checked, because the agent added a second one and a guard
-  // that only covers the first is a guard that passes while the hole is open.
   assert.ok(/sanitizeSummary\(f\.summary\)/.test(graph))
-  const session = readFileSync("lib/review-session.ts", "utf8")
-  assert.ok(/sanitizeSummary\(f\.summary\)/.test(session))
+  const agent = readFileSync("lib/review-rule.ts", "utf8")
+  assert.ok(/sanitizeSummary\(f\.summary\)/.test(agent))
 })
 
+// `initChatModel` resolves the provider with a dynamic specifier, which the Next
+// bundler cannot follow, so every model call would fail before it was made.
 test("no model is built through a runtime-computed import", () => {
-  // `initChatModel` resolves the provider package with a dynamic specifier.
-  // A bundler cannot follow that, and on Next every model call died with
-  // "Cannot find module as expression is too dynamic" before it was made.
-  for (const file of ["lib/review-graph.ts", "lib/review-session.ts", "lib/chat-model.ts"]) {
+  for (const file of ["lib/review-graph.ts", "lib/review-rule.ts", "lib/chat-model.ts"]) {
     const source = readFileSync(file, "utf8")
       .split("\n")
       .filter((line) => line.startsWith("import"))

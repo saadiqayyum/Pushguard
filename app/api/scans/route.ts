@@ -1,16 +1,14 @@
-import { NextResponse, after } from "next/server"
 import { serializeScan } from "@/lib/db"
-import { withErrorHandler } from "@/lib/route"
-import { enqueueScan, resolveRequester, runScan } from "@/lib/scan"
+import { respond, userRoute } from "@/lib/route"
+import { enqueueScan, resolveRequester } from "@/lib/scan"
+import { requireTenant } from "@/lib/tenant"
 import { createScanBody } from "@/schemas/api"
+import { scanOut } from "@/schemas/output"
 
-// The scan runs in this invocation, after the response: the queue row and the
-// cron drain exist to recover the scans that outlive it, not to start them.
-export const maxDuration = 60
-
-export const POST = withErrorHandler("/api/scans", async (request) => {
-  const requester = await resolveRequester()
-  const scan = await enqueueScan(requester, createScanBody.parse(await request.json()))
-  if (scan.status === "queued") after(() => runScan(scan._id))
-  return NextResponse.json({ data: serializeScan(scan) })
+// Queued only. The job runner picks it up; nothing runs in this request.
+export const POST = userRoute("/api/scans", async (request) => {
+  const body = createScanBody.parse(await request.json())
+  await requireTenant()
+  const scan = await enqueueScan(await resolveRequester(), body)
+  return respond(scanOut, serializeScan(scan))
 })

@@ -19,7 +19,7 @@ test("every rule Pushguard ships is accepted", async () => {
   // The reason redos-detector was not used: it rejected two of these while
   // saying nothing different about the dangerous one above.
   for (const rule of defaultRules) {
-    for (const source of [rule.added_lines, rule.commit_message]) {
+    for (const source of [rule.added_lines, rule.commit_message].flat()) {
       if (!source) continue
       assert.equal((await checkRegexSafety(source)).ok, true, `${rule.id}: /${source}/ was rejected`)
     }

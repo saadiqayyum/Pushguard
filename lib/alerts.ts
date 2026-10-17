@@ -1,3 +1,4 @@
+import { queueInvestigation } from "@/lib/investigator"
 import { resolveAlertTarget } from "@/lib/alert-target"
 import {
   compareLink,
@@ -16,27 +17,36 @@ import {
   recordAlert,
   recordOccurrence,
   type AlertDoc,
+  type AlertPullRequest,
+  type AlertPush,
   type InstallationDoc,
   type ScanFinding,
 } from "@/lib/db"
 import { confirmContentMatches, type ConfirmedMatch, type RuleMatch } from "@/lib/engine"
-import {
-  commentOnIssue,
-  createAlertIssue,
-  DIFF_READ_BUDGET,
-  fetchAddedLines,
-  type CompareResult,
-} from "@/lib/github"
+import { DIFF_READ_BUDGET } from "@/lib/diff-lines"
+import { commentOnIssue, createAlertIssue } from "@/lib/github"
+import { pushDiffLoader } from "@/lib/push-diff-loader"
+import type { PushDiff } from "@/lib/push-diff"
+import type { FiledRef } from "@/lib/escalate"
+import { ownerOf } from "@/lib/finding"
 import { logger } from "@/lib/logger"
+import { notifySinks } from "@/lib/sinks"
 import type { Severity } from "@/schemas/rule"
 import { EMPTY_SHA, type ChangeEvent } from "@/lib/change-event"
 
 // A diff too big to read is a blind spot, and blind spots are where things get
 // put.
-const TRUNCATED_FINDING = {
+export const TRUNCATED_FINDING = {
   id: "diff-not-fully-read",
   severity: "high" as const,
   description: "The diff exceeded the read budget, so part of this push was never scanned",
+}
+
+// GitHub's compare stops listing files at 300, so a larger change is partly unread.
+export function compareTruncatedFinding(repo: string): ScanFinding {
+  return toFinding(TRUNCATED_FINDING, repo, [], [
+    "GitHub listed only the first 300 changed files; rules never saw the rest.",
+  ], { prose: true })
 }
 
 // The repeat wording for a push: a reference, not a re-report.
@@ -101,8 +111,8 @@ export async function fileOrThreadAlert(input: {
   body: string
   repeat: string
   assignees?: string[]
-  push?: AlertDoc["push"]
-  pullRequest?: AlertDoc["pullRequest"]
+  push?: AlertPush
+  pullRequest?: AlertPullRequest
   by?: string
 }): Promise<FiledAlert> {
   const existing = await openAlertForRules(input.target, input.ruleIds)
@@ -111,7 +121,7 @@ export async function fileOrThreadAlert(input: {
       input.pullRequest !== undefined &&
       (existing.pullRequest?.number === input.pullRequest.number ||
         (existing.sightings ?? []).some((s) => s.pullRequest === input.pullRequest?.number))
-    const seen = await recordOccurrence(existing._id, {
+    const seen = await recordOccurrence(existing.repo, existing.number, {
       ruleIds: input.ruleIds,
       sha: input.push?.after ?? null,
       by: input.push?.sender ?? input.by ?? null,
@@ -164,6 +174,12 @@ export async function fileOrThreadAlert(input: {
     rules: input.ruleIds,
     source: input.source,
   })
+  await notifySinks(ownerOf(input.target), {
+    severity: input.severity,
+    title: input.title,
+    url: issue.html_url,
+    lines: input.push ? [`Pushed by @${input.push.sender} to ${input.push.branch}`] : [],
+  }).catch((error: unknown) => logger.error("sink_notify_failed", { target: input.target, error: String(error) }))
   if (input.pullRequest) {
     await commentOnPullRequest({ ...input, pullRequest: input.pullRequest, issue: issue.number })
   }
@@ -171,13 +187,15 @@ export async function fileOrThreadAlert(input: {
 }
 
 // `forensics` is what a force push removed, already matched against the rules.
+// `loadDiff` is the caller's already-fetched compare for event.before...after.
 export async function processMatches(
   installation: InstallationDoc,
   event: ChangeEvent,
   matches: RuleMatch[],
   forensics: ForcePushForensics | null = null,
   aiFindings: ScanFinding[] = [],
-): Promise<void> {
+  loadDiff?: () => Promise<PushDiff>,
+): Promise<FiledRef | null> {
   const { repo, after: sha } = event
   const { installationId } = installation
   const source: AlertDoc["source"] = event.pullRequest ? "pull_request" : "push"
@@ -186,7 +204,7 @@ export async function processMatches(
 
   const already = await alertForCommit(target.repo, sha)
   if (already) {
-    if (event.pullRequest && (await attachPullRequest(already._id, event.pullRequest))) {
+    if (event.pullRequest && (await attachPullRequest(already.repo, already.number, event.pullRequest))) {
       await commentOnPullRequest({
         installationId,
         target: target.repo,
@@ -197,19 +215,18 @@ export async function processMatches(
       })
     }
     logger.info("alert_deduplicated", { repo, sha, source, issue: already.number })
-    return
+    return { target: target.repo, number: already.number, redact: target.redactContent }
   }
 
   const canDiff = event.before !== EMPTY_SHA && event.after !== EMPTY_SHA
   const needsDiff = matches.some((m) => m.needsDiff) && canDiff
-  const diff: CompareResult | null = needsDiff
-    ? await fetchAddedLines(installationId, repo, event.before, event.after)
-    : null
+  const loaded = needsDiff ? await (loadDiff ?? pushDiffLoader(installationId, repo, event.before, event.after))() : null
+  const diff = loaded && { addedLines: loaded.addedLines, truncated: loaded.truncated || loaded.unread.length > 0 }
 
   const confirmed = confirmContentMatches(matches, diff?.addedLines ?? null)
   if (confirmed.length === 0 && !forensics && !diff?.truncated && aiFindings.length === 0) {
     logger.info("alert_dismissed_no_content_match", { repo, sha })
-    return
+    return null
   }
 
   const serious = confirmed.filter(
@@ -234,7 +251,7 @@ export async function processMatches(
   const severity = topSeverity(findings.map((finding) => finding.severity))
   if (findings.length === 0) {
     logger.info("alert_dismissed_no_findings", { repo, sha })
-    return
+    return null
   }
   const mention =
     SEVERITY_ORDER.indexOf(severity) >= SEVERITY_ORDER.indexOf("high")
@@ -272,6 +289,14 @@ export async function processMatches(
       ? { pullRequest: { number: event.pullRequest.number, base: event.pullRequest.base, url: event.pullRequest.url } }
       : {}),
   })
+  await queueInvestigation(installation, {
+    repo,
+    sha,
+    target: target.repo,
+    issue: filed.number,
+    redact: target.redactContent,
+    findings,
+  }).catch((error: unknown) => logger.warn("investigation_queue_failed", { repo, error: String(error) }))
   logger.info("push_alert_filed", {
     repo,
     target: target.repo,
@@ -281,6 +306,7 @@ export async function processMatches(
     threaded: filed.threaded,
     erased: forensics?.erasedCommitCount ?? 0,
   })
+  return { target: target.repo, number: filed.number, redact: target.redactContent }
 }
 
 // Put the alert on someone's "Assigned to you" list. Only a user handle can be.
@@ -290,7 +316,8 @@ export function assigneesFor(alertMention: string | null): string[] {
   return handle.includes("/") ? [] : [handle]
 }
 
-// A compare against the empty SHA 404s on GitHub, which is exactly the case on.
+// A compare against the empty SHA 404s on GitHub, which is exactly the case on
+// a new branch, so that links to the commit instead.
 function reviewLink(event: ChangeEvent): string {
   if (event.pullRequest) return `${event.pullRequest.url}/files`
   return compareLink(event.repo, event.before === EMPTY_SHA ? null : event.before, event.after)

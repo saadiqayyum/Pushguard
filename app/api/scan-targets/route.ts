@@ -1,16 +1,16 @@
-import { NextResponse } from "next/server"
-import { withErrorHandler } from "@/lib/route"
+import { respond, userRoute } from "@/lib/route"
 import { resolveRequester, scanTargets } from "@/lib/scan"
+import { scanTargetsOut } from "@/schemas/output"
 
-// What the picker is allowed to show: installations of this app that the.
-export const GET = withErrorHandler("/api/scan-targets", async () => {
+export const GET = userRoute("/api/scan-targets", async () => {
   const targets = await scanTargets(await resolveRequester())
-  return NextResponse.json({
-    data: targets.map(({ installation, repos }) => ({
+  return respond(
+    scanTargetsOut,
+    targets.map(({ installation, repos }) => ({
       installationId: installation.id,
       account: installation.account,
       accountType: installation.accountType,
       repos,
     })),
-  })
+  )
 })

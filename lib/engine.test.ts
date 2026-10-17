@@ -16,6 +16,10 @@ import {
 import { ruleSchema } from "../schemas/rule"
 import { catalogRules as defaultRules } from "./rules/catalog"
 import { findingsMarkdown, toFinding } from "./finding"
+import type { FileLines } from "./diff-lines"
+
+const inFile = (path: string, lines: string[]): FileLines => new Map([[path, lines]])
+const pkg = (lines: string[]) => inFile("package.json", lines)
 
 const context = (overrides: Partial<PushContext> = {}): PushContext => ({
   repo: "acme/api",
@@ -115,9 +119,28 @@ test("added_lines regex confirms or dismisses content matches", () => {
 
   const match = evaluateRule(rule, context())
   assert.ok(match?.needsDiff)
-  assert.equal(confirmContentMatches([match!], ['  "test": "vitest"']).length, 0)
-  assert.equal(confirmContentMatches([match!], ['  "postinstall": "x"']).length, 1)
+  assert.equal(confirmContentMatches([match!], pkg(['  "test": "vitest"'])).length, 0)
+  assert.equal(confirmContentMatches([match!], pkg(['  "postinstall": "x"'])).length, 1)
   assert.equal(confirmContentMatches([match!], null).length, 1)
+})
+
+test("a path-scoped rule reads only the lines added to its own files", () => {
+  const rule = ruleSchema.parse({ id: "postinstall", severity: "critical", paths: ["package.json"], added_lines: '"postinstall"\\s*:' })
+  const ctx = context({ files: [{ path: "package.json", changeType: "modified" }, { path: "README.md", changeType: "modified" }] })
+  const hook = '  "postinstall": "node x.js"'
+  const elsewhere = new Map([["package.json", ['  "version": "1.0.1"']], ["README.md", [hook]]])
+  assert.deepEqual(confirmContentMatches(evaluateRules([rule], ctx), elsewhere), [])
+
+  const here = new Map([["package.json", [hook]], ["README.md", ["docs"]]])
+  const [found] = confirmContentMatches(evaluateRules([rule], ctx), here)
+  assert.deepEqual([found.matchedFiles, found.matchedLines], [["package.json"], [hook]])
+})
+
+test("a content-only rule reads every file and names the one that matched", () => {
+  const rule = ruleSchema.parse({ id: "eval", severity: "high", added_lines: "eval\\(" })
+  const lines = new Map([["a.ts", ["ok()"]], ["b.ts", ["eval(x)"]]])
+  const [found] = confirmContentMatches(evaluateRules([rule], context()), lines)
+  assert.deepEqual([found.matchedFiles, found.matchedLines], [["b.ts"], ["eval(x)"]])
 })
 
 test("hour_utc not_between fires outside the window", () => {
@@ -228,24 +251,28 @@ test("an org glob binds a rule to one organization", () => {
 test("erasedLines keeps only what the rewrite dropped", () => {
   const orphaned = ["const KEY = 'sk-live-123'", "export const port = 3000"]
   const surviving = ["export const port = 3000"]
-  assert.deepEqual(erasedLines(orphaned, surviving), ["const KEY = 'sk-live-123'"])
+  assert.deepEqual(erasedLines(inFile("a.ts", orphaned), inFile("a.ts", surviving)), inFile("a.ts", ["const KEY = 'sk-live-123'"]))
 })
 
 test("a rebase that keeps its content erases nothing", () => {
   const lines = ["a()", "b()", "c()"]
-  assert.deepEqual(erasedLines(lines, lines), [])
+  assert.deepEqual(erasedLines(inFile("a.ts", lines), inFile("a.ts", lines)), new Map())
 })
 
 test("re-indentation is not an erasure", () => {
-  assert.deepEqual(erasedLines(["  doThing()"], ["      doThing()"]), [])
+  assert.deepEqual(erasedLines(inFile("a.ts", ["  doThing()"]), inFile("a.ts", ["      doThing()"])), new Map())
 })
 
 test("blank lines never count as erased content", () => {
-  assert.deepEqual(erasedLines(["", "   "], []), [])
+  assert.deepEqual(erasedLines(inFile("a.ts", ["", "   "]), new Map()), new Map())
 })
 
 test("erasedLines does not report the same line twice", () => {
-  assert.deepEqual(erasedLines(["dupe", "dupe"], []), ["dupe"])
+  assert.deepEqual(erasedLines(inFile("a.ts", ["dupe", "dupe"]), new Map()), inFile("a.ts", ["dupe"]))
+})
+
+test("a line moved to another file by the rewrite is not erased", () => {
+  assert.deepEqual(erasedLines(inFile("a.ts", ["moved()"]), inFile("b.ts", ["moved()"])), new Map())
 })
 
 test("erasureRules keeps content rules and drops the rest", () => {
@@ -267,11 +294,11 @@ test("a secret force-pushed away is found; a plain rebase is not", () => {
   })
   const ctx = context({ forced: true, files: [{ path: ".env", changeType: "added" }] })
 
-  const hidden = erasedLines(["SECRET_KEY=sk-live-1", "PORT=3000"], ["PORT=3000"])
+  const hidden = erasedLines(inFile(".env", ["SECRET_KEY=sk-live-1", "PORT=3000"]), inFile(".env", ["PORT=3000"]))
   const found = confirmContentMatches(evaluateRules(erasureRules([rule]), ctx), hidden)
   assert.deepEqual(found.map((m) => m.matchedLines), [["SECRET_KEY=sk-live-1"]])
 
-  const rebased = erasedLines(["SECRET_KEY=sk-live-1"], ["SECRET_KEY=sk-live-1"])
+  const rebased = erasedLines(inFile(".env", ["SECRET_KEY=sk-live-1"]), inFile(".env", ["SECRET_KEY=sk-live-1"]))
   assert.deepEqual(confirmContentMatches(evaluateRules(erasureRules([rule]), ctx), rebased), [])
 })
 
@@ -437,7 +464,7 @@ test("a unicode rule still sees lines no regex rule matched", () => {
       { rule: unicodeRule, matchedFiles: [], matchedMessages: [], needsDiff: true },
       { rule: regexRule, matchedFiles: [], matchedMessages: [], needsDiff: true },
     ],
-    lines,
+    inFile("a.ts", lines),
   )
   assert.deepEqual(confirmed.map((c) => c.rule.id), ["u"])
 })
@@ -455,7 +482,7 @@ test("the prefilter changes no outcome for regex rules", () => {
     const viaMatch = matchAddedLines(rule, lines)
     const viaConfirm = confirmContentMatches(
       [{ rule, matchedFiles: [], matchedMessages: [], needsDiff: true }],
-      lines,
+      inFile("a.ts", lines),
     )
     assert.deepEqual(viaConfirm[0]?.matchedLines ?? [], viaMatch, `${rule.id} differs`)
   }
@@ -485,4 +512,40 @@ test("prose is not rendered as code in an issue body", () => {
 
   const quoted = findingsMarkdown([toFinding(rule, "a/b", [], ["eval(atob('x'))"])])
   assert.ok(quoted.some((line) => line.includes("`eval(atob('x'))`")), "a matched line stays code")
+})
+
+const grouped = ruleSchema.parse({
+  id: "install-hook",
+  severity: "high",
+  any_of: [
+    { paths: ["**/package.json"], added_lines: ['"preinstall"\\s*:', '"postinstall"\\s*:'] },
+    { paths: ["**/setup.py"] },
+  ],
+})
+
+test("a rule matches when any of its groups matches", () => {
+  assert.ok(evaluateRule(grouped, context({ files: [{ path: "setup.py", changeType: "modified" }] })))
+  assert.equal(evaluateRule(grouped, context({ files: [{ path: "README.md", changeType: "modified" }] })), null)
+})
+
+test("each pattern in a list matches on its own", () => {
+  const matches = evaluateRules([grouped], context({ files: [{ path: "package.json", changeType: "modified" }] }))
+  const confirmed = confirmContentMatches(matches, pkg(['  "postinstall": "node x.js"']))
+  assert.deepEqual(confirmed.map((m) => m.rule.id), ["install-hook"])
+  assert.equal(confirmContentMatches(matches, pkg(['  "build": "next build"'])).length, 0)
+})
+
+test("a rule confirmed by two groups is reported once", () => {
+  const both = ruleSchema.parse({
+    id: "either",
+    severity: "low",
+    any_of: [{ paths: ["a/**"] }, { paths: ["**/*.ts"] }],
+  })
+  const matches = evaluateRules([both], context({ files: [{ path: "a/x.ts", changeType: "added" }] }))
+  assert.equal(matches.length, 2)
+  assert.equal(confirmContentMatches(matches, new Map()).length, 1)
+})
+
+test("an empty group is rejected", () => {
+  assert.equal(ruleSchema.safeParse({ id: "x", severity: "low", any_of: [{}] }).success, false)
 })

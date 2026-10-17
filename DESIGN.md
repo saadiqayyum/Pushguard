@@ -1,438 +1,219 @@
 # Pushguard, Design
 
-Org-wide push monitoring for GitHub. Detects force pushes and suspicious code
-changes across every repo in an organization, opens tickets, identifies the
-pushing account, and notifies the team. One GitHub App install covers all
-repos, current and future.
+Org-wide push monitoring for GitHub. One GitHub App install per account watches
+every repository, evaluates each push and pull request against rules, and files
+alerts as GitHub issues naming the pushing account. This file holds decisions
+and what they replaced; `RUNTIME.md` shows what runs when; `CLAUDE.md` holds the
+working rules.
 
 ## Decisions
 
-| Area                 | Decision                                                                                                                                                                             | Rejected and why                                                                                                                                                                                                             |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Runtime              | Next.js (App Router) on Vercel, single app                                                                                                                                           | CF Worker + separate UI (two deploys, no benefit at this volume); Rust (bottleneck is network, not CPU; contributor friction)                                                                                                |
-| Rule defaults        | The catalog ships as code in `lib/rules/catalog/`; the database holds only overrides                                                                                                 | Seeding a copy per account on install (one identical document per rule per account, and an improvement to a rule could never reach anybody already installed)                                                                |
-| Rules storage        | MongoDB Atlas (rule body as document)                                                                                                                                                | Git-based rules repo (owner must know git, PR merge delay); Postgres (owner rejected migration/seeding workflow; indexes now created idempotently in code)                                                                   |
-| Alerts storage       | GitHub issues in the repo that triggered them; optional single-repo override for central triage                                                                                      | Own alerts table (duplicates what issues give free: storage, search, triage UI, email notifications); mandatory dedicated repo (needs `administration:write` to create, which no org will grant a monitoring app)            |
-| Repo/team pickers    | `repos` and `teams` cached on the installation doc, maintained by the installation, installation_repositories and team webhooks; one backfill call per install                       | Listing repos/teams from GitHub on each dashboard render (rate limit, latency, avoidable)                                                                                                                                    |
-| Notification         | GitHub issue + `@mention` of team                                                                                                                                                    | Resend/SMTP (extra service; GitHub already emails on mention)                                                                                                                                                                |
-| AI rules             | Their own kind of rule, firing on their own `paths`                                                                                                                                  | `ai` as a _field_ on a pattern rule (it only ran once the regex had already matched, so the model could never find what the pattern missed, which is the only reason to pay for it)                                          |
-| AI review shape      | `scope: changed` bulk-loads and triages; `scope: repository` is a background session where the model navigates via tools                                                             | Running whole-repository review inline on the push (a tree walk plus an agent loop does not fit a 60s invocation); bulk-loading a whole repository (mostly re-reading unchanged code)                                        |
-| Model access to code | Two tools, `read_file` and `find_references`, with paths validated server-side                                                                                                       | Handing the model a scoped GitHub token (every file it reads is attacker-controlled, so a credential plus an instruction channel plus an issue to publish into is an exfiltration path)                                      |
-| Reference lookup     | A code index of paths and identifiers, built at install, maintained by the push webhook                                                                                              | GitHub code search (10 req/min, default branch only, lags reality); building a real call graph (a parser per language, which is a project, not a feature)                                                                    |
-| Auth | Auth.js, GitHub OAuth only; user's org list captured at login; dashboard reachable by members and by collaborators found in `repo_access`; rules and model keys need membership | RBAC/roles table (org membership is the ACL); email/password (no reason to exist for a GitHub tool) |
-| Tenancy              | Multi-tenant: `installations` collection registered by the GitHub App's installation webhook; alerts are filed in the repository that triggered them, no per-org target to configure | Env-based single tenant (owner wants to ship to multiple users); a configurable alerts repo (a setting nobody needs yet; the finding belongs with the code)                                                                  |
-| GitHub client        | Octokit (`@octokit/app`): app JWT, installation token caching, typed endpoints; `@octokit/webhooks-methods` for signature verify                                                     | Hand-rolled JWT signing + fetch wrapper (replaced; official libraries own this)                                                                                                                                              |
-| Model client | LangChain, one static import per provider and a switch | `initChatModel` (resolves the provider package through a computed `import()`, which a bundler cannot follow: on Next every model call failed with "Cannot find module as expression is too dynamic" before a request was made) |
-| Structured output    | `withStructuredOutput(..., { method: "jsonSchema" })`                                                                                                                                | The default `functionCalling` method (it pins `tool_choice`, which Anthropic cannot do while thinking is on, so LangChain silently drops the pin and the call degrades to best-effort)                                       |
-| Client HTTP          | One `api()` helper in `lib/api-client.ts`                                                                                                                                            | axios, scattered fetch calls                                                                                                                                                                                                 |
-| Globs                | picomatch                                                                                                                                                                            | minimatch (larger, slower)                                                                                                                                                                                                   |
-| Dedup                | Search open issues by commit SHA before creating                                                                                                                                     | DB dedup table (issues are already durable and queryable)                                                                                                                                                                    |
-| Cache                | **None.** GitHub data is a webhook-maintained projection; our own data is read every time                                                                                            | 60s in-memory rule cache (removed: invalidation reached only the instance that handled the write, so a rule disabled because it was misfiring kept firing elsewhere for a minute); Redis/KV (a cache we do not want, hosted) |
-| File reads           | One tree call for paths, sizes and hashes, then GraphQL batches of ~40 blobs                                                                                                         | The REST contents endpoint (one HTTP call per file, which made reading 200 files cost 200 calls)                                                                                                                             |
-| Background work      | Mongo job queues drained inline by whatever triggered them, cron as mop-up                                                                                                           | Relying on the schedule (Vercel Hobby allows one cron run a day, so an index maintained by cron would be a day behind the code)                                                                                              |
-| UI                   | shadcn/ui + Tailwind, neutral theme, no emojis                                                                                                                                       | Raw Tailwind only (rebuilds table/dialog/form poorly); MUI/AntD (runtime deps, heavy, off-aesthetic)                                                                                                                         |
-| Public pages         | `app/(marketing)/` route group with its own token set scoped to `.site`; dashboard moved off `/` to `/dashboard`                                                                     | A separate marketing site (two deploys, and the landing page's whole point is that it runs a real scan)                                                                                                                      |
-| Scan model           | Recent history read as one compare across the last 50 commits of the default branch, handed to the existing engine as a `PushContext`                                                | Cloning (bandwidth, no serverless filesystem); per-commit file listing (N+1 GitHub calls per repo)                                                                                                                           |
-| Scan queue           | `scans` collection + `after()` on the invocation that queued it; cron is recovery only                                                                                               | SQS/QStash/Upstash (a service to run and pay for before there is load to justify it)                                                                                                                                         |
-| Scan concurrency     | Unique partial index on `{owner}` where `active: true`                                                                                                                               | Read-then-write count check (two tabs both pass it)                                                                                                                                                                          |
-
-| Filing findings | Explicit second action, gated on membership **and** the installation covering the repo | Filing on scan completion (a scan is a look, not a decision) |
-| Install + sign-in | GitHub App "Request user authorization during installation" + Setup URL into a route handler that calls `signIn` | A custom OAuth code exchange (re-implements what Auth.js already owns) |
+| Area | Decision | Rejected and why |
+|---|---|---|
+| Runtime | One Next.js (App Router) app on Vercel | CF Worker + separate UI (two deploys); Rust (the bottleneck is network, not CPU) |
+| Database | Supabase Postgres through Drizzle, migrations in `drizzle/` | MongoDB (the previous store: no row-level security, so tenant isolation lived only in application filters; no queue, so background work rode on `after()` and a cron) |
+| Tenant isolation | Row-level security, forced on every `app` table. The app connects as `pushguard` (`NOINHERIT`) and each transaction switches to `pushguard_app` with `app.login` set (`withUser`) or to `pushguard_system` (`asSystem`) | Filtering in queries (one forgotten `where` leaks a tenant); `BYPASSRLS` for the system role (a table without policies would be open to it instead of closed) |
+| System handle | `asSystem` only in the webhook, runner routes, `lib/jobs`, sign-in and scripts; `no-restricted-imports` enforces it | Letting routes elevate (a route bug becomes a cross-tenant read) |
+| Responses | `respond(schema, data)` with a zod output schema per route; secrets live in columns no schema names and the app role cannot select | Returning rows (a new column ships to the browser by default) |
+| Background work | One pgmq queue. An insert trigger wakes `/api/jobs/run` through `pg_net`; a one-minute `pg_cron` check wakes it only when a delayed job is due | `after()` on the request (work dies with the invocation and is not retried); Vercel cron drains (Hobby runs once a day); QStash / SQS (another service before there is load) |
+| Webhook | Verify, dedupe on the delivery id, update projections, enqueue, answer. No GitHub or model call inside | Doing the work inline (slow and unretried; a failure loses the event) |
+| Missed deliveries | The first webhook per 15 minutes queues a reconcile of the App's delivery log: redeliver failures, meta-alert after 3 attempts | Trusting delivery (GitHub does not redeliver on its own); a scheduled reconcile (the schedule is the thing we do not have) |
+| Retries | 5 attempts per job; a rate limit sets the visibility timeout to the reset; exhaustion files a finding | Silent drop (a reader cannot tell "not evaluated" from "clean") |
+| Auth | Auth.js with the GitHub App's own OAuth client; user token refreshed by refresh token | Supabase Auth (a second identity model); a custom OAuth exchange |
+| Roles | Mirror GitHub: `org_members` (admin / member) filled at install and by `organization` webhooks, own role re-read at sign-in; `repo_access` for collaborators. `requireTenant` / `requireAdmin` resolve the org | A roles table we invent (drifts from GitHub); org membership as repository access (members could read private repos they cannot open) |
+| Rule defaults | The catalog ships as code in `lib/rules/catalog/`; the database holds overrides and custom rules, keyed by org | Seeding a copy per account (a rule fix never reaches existing installs) |
+| Staff rules | One concept, the rule: staff publish new or changed rules to `platform_rules`, signed with ed25519, versioned, run in shadow before publish; an org switches one off like any catalog rule. Checks (sandbox scripts) are a separate signed artifact a rule's response names by id | Playbooks as a second detection kind with their own tables, editor and per-org toggle (two words for one idea, two code paths for the same matching) |
+| Rule writes | Admin only, enforced by RLS (`authz.is_admin`); every change writes `rule_versions` | Member writes (a compromised member disables a rule before attacking) |
+| Alerts | GitHub issues in the repository that triggered them, mirrored to `alerts`; a public repo gets the alert without the matched lines | Own alert UI only (issues give storage, search, triage and email free); a central alerts repo (needs `administration`) |
+| Dedup | Thread onto the open alert for the same rules, tracked in `alerts` | Searching issues by SHA (rate-limited and racy) |
+| Out-of-band | Slack-compatible webhook sinks per org, URL sealed with `secret-box`; Discord through `/slack`. Meta-alerts go only there | Email (another service); meta-alerts as issues (the actor can close them) |
+| Projections | Repos, branches, members, access, open PRs, alert state: seeded at install, maintained by webhooks | Reading GitHub per request (rate limit, latency); a TTL cache (knowingly wrong for a window) |
+| Cache | None | A 60 s in-memory rule cache (removed: invalidation reached one instance, so a disabled rule kept firing elsewhere) |
+| GitHub client | Octokit (`@octokit/app`) with throttling and retry plugins, all in `lib/github.ts` | Hand-rolled JWT and fetch |
+| File reads | One tree call for paths, sizes and hashes, then GraphQL batches of 40 blobs | REST contents (one call per file) |
+| AI rules | Their own rule kind, firing on their own `paths` | `ai` as a field on a pattern rule (it could only see what the regex already found) |
+| AI review shape | `scope: changed` batch-loads and triages inside the push job; `scope: repository` is a resumable `review_session` job where an agent navigates with tools | Whole-repo review inline (does not fit one job); bulk-loading a repository |
+| Model access to code | Two tools, `read_file` and `find_references`, with paths validated server-side and readers injected | A scoped GitHub token for the model (credential plus instruction channel plus an issue to publish into) |
+| Reference lookup | Code index of paths and identifiers, never source; built at install, maintained by push jobs, built on demand by a review | GitHub code search (10 req/min, default branch only, lags) |
+| Model client | LangChain with one static import per provider; LangGraph for the triage graph and the ReAct agent | `initChatModel` (computed `import()`; the Next bundler cannot follow it) |
+| Structured output | `withStructuredOutput(..., { method: "jsonSchema" })` validated by zod | `functionCalling` (pins `tool_choice`, which Anthropic drops while thinking is on) |
+| Model keys | The org's own keys, sealed at rest, decrypted at call time; per-org daily review cap | An operator fallback key (the operator pays for every tenant's loop) |
+| Detonation | In Pushguard's own private runner repo (`RUNNER_REPO`) on GitHub-hosted Actions, with a monthly quota per org, dispatched with a one-time nonce; a Go detonator runs install / import / execute without network | Running payloads on our infrastructure; self-hosted runners; a runner repo per org (setup each org had to do, and a workflow each org could edit); a token in the workflow |
+| Scan model | Last 50 commits of a branch read as one compare and handed to the engine as a `PushContext` | Cloning (no serverless filesystem); per-commit listing (N+1 calls) |
+| Scan concurrency | Unique partial index on `owner` where `active` | Read-then-write count (two tabs both pass) |
+| User-queued jobs | Only through `app.enqueue_scan` and `app.enqueue_scan_filing`, `SECURITY DEFINER`, ownership checked | Queue access for the app role (a user could forge a push job that runs as the system) |
+| Filing scan findings | A separate action; access re-checked per repository at filing time | Filing on completion (a scan is a look, not a decision) |
+| Limits | Per-login, per-installation and per-credential windows in `rate_limits`, counted by `app.hit_rate_limit` | Upstash / Redis (a service for a counter) |
+| UI | shadcn/ui, Tailwind, lucide, neutral theme, no emojis | MUI / AntD |
+| Globs | picomatch | minimatch |
 
 ## Architecture
 
 ```
-GitHub App (multi-tenant; permissions: metadata:read, contents:read,
-issues:write, pull_requests:read, members:read)
-        |
-        v
-Vercel - one Next.js app
-  /api/webhook     verify -> engine -> after(alert + index + AI session)
-  /api/scans*      enqueue -> after(runScan) -> findings; file on request
-  /api/cron/scans  mop-up: stuck scans, index jobs, review sessions, access
-  /api/rules*      dashboard backend (OAuth + membership guard)
-  /api/ai*         model keys and AI rules
-        |
-        +-- MongoDB Atlas  (rules, projections, queues, code index)
-        +-- GitHub API     (compare diffs, blob batches, issues)
-        +-- A model        (the account's own key; no operator fallback)
+GitHub App ──webhook──> /api/webhook ──> projections + pgmq "jobs"
+                                              │ insert trigger / pg_cron (due only)
+                                              v
+                              /api/jobs/run (bearer) ──> lib/jobs/*
+                                 │            │             │
+                              GitHub API   model (org key)  Slack / Discord sinks
+                                 │
+                       label pg-<nonce> ──> runner repo ──> /api/runner/{fetch,report}
+
+Browser ──> /api/* (userRoute: session, per-login limit, withUser) ──> Postgres under RLS
 ```
 
-No servers, no queues to run, no email service — GitHub emails on mention.
-
-See `RUNTIME.md` for what runs when and how many API calls each path costs.
-
-## File tree
+## Layout
 
 ```
-app/
-  (marketing)/          landing, how-to-use, about
-  dashboard/            alerts / scans / rules / ai
-  api/
-    webhook/            GitHub events; the detection entry point
-    rules/ ai-rules/    rule CRUD; ai/ manages model keys
-    scans/              queue, poll, file findings
-    cron/scans/         mop-up (CRON_SECRET)
-    install/complete/   App Setup URL -> signIn -> dashboard
-lib/
-  engine.ts             rule matcher; pure, zero IO, unit-tested
-  rules.ts              catalog + this account's overrides
-  alerts.ts             dedup, diff, AST pass, issue composition
-  scan.ts               scan lifecycle: quota, queue, run, file
-  github.ts             the only GitHub client (tree, blob batches, issues)
-  ai-rules.ts           scope: changed — bulk load and triage
-  review-graph.ts       the two-stage triage/deep graph
-  review-session.ts     scope: repository — the agent, resumable
-  review-tools.ts       read_file / find_references; injected readers
-  review-scope.ts       path validation; pure, the security boundary
-  code-index.ts         index build and maintenance
-  tokens.ts             identifier extraction; no grammar, no parser
-  compact.ts            shrink source before a model is billed for it
-  diff-context.ts       what a review sees before it reads anything
-  db/client.ts          cached client, defineCollection, index registry
-  db/<entity>.ts        one entity each: type, collection, indexes, queries
-schemas/                zod contracts shared by API, UI and engine
-lib/rules/catalog/      the 78 shipped rules
-lib/rules/ai-examples.ts  AI rules offered in the dashboard
-public/rules.example.yaml pattern-rule schema by example
+app/api/webhook/        GitHub events: verify, dedupe, route to lib/webhook/*
+app/api/jobs/run/       queue consumer, woken by pg_net
+app/api/runner/         fetch (nonce -> tarball) and report (token -> result)
+app/api/*               user routes: parse, guard, call lib/, respond()
+lib/db/client.ts        roles, withUser / asSystem, q()
+lib/db/<entity>.ts      one table each: schema, policies, indexes, queries
+lib/webhook/            per-event handlers, projections only
+lib/jobs/               one handler per job type; run.ts dispatches and retries
+lib/engine.ts           rule matcher; pure
+lib/alerts.ts           diff confirm, x-ray, issue composition, threading, sinks
+lib/scan*.ts            queue (scan.ts), run (scan-run.ts), file (scan-filing.ts)
+lib/review-*.ts         AI: graph, session, agent rule, orientation, tools, scope
+lib/runner/             dispatch, report sanity, findings
+lib/tenant.ts           requireTenant / requireAdmin
+drizzle/                migrations: roles, tables, RLS, grants, queue, wake-up
+runner/  detonator/     the tenant workflow and the Go detonator
 ```
-
-Rules: `engine.ts` stays pure and unit-tested. GitHub IO goes through
-Octokit in `lib/github.ts`, browser IO through `lib/api-client.ts`. No
-comments narrating code; comments only for non-obvious constraints.
 
 ## Rule schema
 
-See `public/rules.example.yaml` for the spec-by-example and `schemas/rule.ts` for
-the enforced contract. Summary:
+`public/rules.example.yaml` is the spec by example; `schemas/rule.ts` is the
+contract. All present conditions AND together; rules OR together; a rule needs
+at least one of `paths`, `all_of`, `when`, `added_lines`, `commit_message`,
+`unicode_risk`, `any_of`, `advanced`.
 
-| Field           | Type                             | Meaning                                                                                           |
-| --------------- | -------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `id`            | kebab-case string                | unique per org                                                                                    |
-| `description`   | string, optional                 | shown in ticket                                                                                   |
-| `severity`      | low / medium / high / critical   | drives action                                                                                     |
-| `enabled`       | bool, default true               | soft delete = disable                                                                             |
-| `repos`         | glob[], optional                 | default all repos                                                                                 |
-| `branches`      | glob[], optional                 | default all branches                                                                              |
-| `paths`         | glob[], optional                 | changed-file match                                                                                |
-| `exclude_paths` | glob[], optional                 | carve-outs                                                                                        |
-| `change_type`   | subset of added/modified/removed | default all three                                                                                 |
-| `all_of`        | glob[][], optional               | each group matched by a file in the same push                                                     |
-| `when`          | object, optional                 | payload conditions: `forced`, `sender_first_push`, `branch_created`, `branch_deleted`, `hour_utc` |
-| `added_lines`   | regex ≤500 chars, optional       | matched against `+` lines of diff                                                                 |
-| `ai`            | prompt string, optional          | Claude analyzes the diff with this question                                                       |
+| Field | Meaning |
+|---|---|
+| `id`, `description`, `pack`, `severity`, `enabled` | identity and action |
+| `on` | `push`, `pull_request`, or both (default) |
+| `repos`, `branches` | globs; on a PR `branches` matches the base |
+| `paths`, `exclude_paths`, `change_type` | changed-file match |
+| `all_of` | 2-5 glob groups, each matched by some file in the same change |
+| `when` | `forced`, `sender_first_push`, `branch_created`, `branch_deleted`, `author_mismatch`, `unreviewed`, `pr_draft`, `pr_opened`, `hour_utc` |
+| `added_lines`, `commit_message` | regex, 500 chars max, checked for catastrophic backtracking on write |
+| `unicode_risk` | `controls` or `confusables` in added lines |
+| `advanced` | a tree (`all` / `any` / `not`, depth 4, 30 leaves) over facts, attack paths, threat indicators, push context, files, lines and other rules, optionally `within` N commits or days |
+| `responses` | `investigate` (a fixed focus id), `detonate` (phases, optional published check), `meta_alert`, `snapshot_tags` |
 
-Semantics: all present fields AND together; rules OR together; a rule must
-have at least one condition. `paths`/`when` rules need zero GitHub reads
-(webhook payload carries changed-file lists). `added_lines`/`ai` rules
-trigger one compare-API call, only when their `paths` already matched.
+Path and `when` rules need no GitHub read; the payload lists files. Content
+rules cost one compare, only after their paths matched. An invalid stored rule
+is logged and skipped.
 
-Severity to action: critical/high = issue + team mention (mention emails),
-medium = issue, low = issue without labels for digest triage.
+A rule is when plus then. Pattern-only rules take the engine's fast path
+unchanged. A rule with `advanced` conditions is skipped by the engine and
+evaluated after it on pushes by `lib/rules/advanced`, which runs the pattern
+part through the same engine and then the tree; pull requests and scans skip
+it. Responses run for any rule that fired on a push, capped per push
+(`rules-capped`). A staff rule version in shadow runs beside the live one and
+only records `rule_shadow_hits`; a row whose signature (over body and status)
+does not verify never loads.
 
-## Webhook flow
+## Access is GitHub's decision
 
-```
-1. verify X-Hub-Signature-256 (timing-safe)         -> 401 on fail
-2. event allowlist: push only                        -> 204 ignore others
-3. payload size cap (1 MB)                           -> 413
-4. ignore own pushes and configured bot accounts     -> 204
-5. zod-parse needed fields only
-6. load rules (DB, cached)                           -> match when/paths
-7. content rules matched by path? fetch compare diff (cap 50 KB, mark truncated)
-8. run added_lines regexes
-9. no matches -> 204. matches -> respond 202, then in waitUntil:
-   a. AI stage for matched ai-rules (failure degrades: ticket notes
-      "analysis unavailable"; AI may escalate/annotate, never suppress)
-   b. dedup: search open issues for head SHA -> skip if found
-   c. create issue: repo, ref, sender.login, pusher.email, before/after
-      SHAs, matched rule ids, matched files, AI verdict, @team mention
-```
+Org membership is not repository access. Which repositories a user may read is
+`repo_access`, seeded from `GET /collaborators` (GitHub's own flattening of org
+role, team grants and direct collaboration) and kept current by `member`,
+`membership`, `team` and `organization` events. Grants are a set of reasons, so
+losing a team does not revoke someone who is also a direct collaborator. RLS
+functions (`authz.can_read`, `authz.is_member`, `authz.is_admin`) read these
+tables; routes cannot widen them.
 
-Idempotency: `X-GitHub-Delivery` logged; SHA dedup makes redeliveries safe.
+The risk, stated plainly: a projection can be wrong where a live read could not.
+GitHub emits no event for some access changes, and none for owner promotion or
+demotion, which is re-read at the next sign-in. Missed deliveries are recovered
+by reconciliation; changes GitHub never announces are not.
 
-## Rule integrity
+## Projections, not a cache
 
-Dashboard access = org membership, so a compromised account could disable
-rules before attacking. Counter: every rule create/update/disable writes a
-`rule_versions` row AND opens a notification issue mentioning the owner.
-Rule changes are themselves alerts.
+GitHub says what changed and we apply it. Every `push` also corrects the record
+it touches, so a missed `create` heals on the next push.
 
-## API contracts
+| Data | Seeded | Kept current by |
+|---|---|---|
+| Installation repos | install payload | `installation`, `installation_repositories`, `repository` |
+| Branches, default branch, visibility | `sync_repos` | `create`, `delete`, `push`, `repository`, `public` |
+| Org members and roles | `sync_org_members`, sign-in | `organization` |
+| Repository access | `sync_repos` | `member`, `membership`, `team`, `organization` |
+| Open pull requests | `sync_repos` | `pull_request` |
+| Alert state | written when filed | `issues`, `issue_comment` |
+| Code index | `index` job per repo | push jobs; built on demand by a review |
 
-All responses: success `{ data }`, failure `{ error: { code, message } }`.
-Error codes: `unauthorized`, `forbidden`, `invalid_signature`,
-`validation_failed`, `not_found`, `rate_limited`, `upstream_github`,
-`upstream_ai`, `internal`.
+Uninstall sends the meta-alert, then `deleteOrgData` removes every org row in one transaction (owner decision: privacy over keeping evidence); suspend deactivates and purges projections. Jobs queued for a deleted org are dropped. The terms version is the `updated` date of `content/legal/terms.md`; accepting it covers the Privacy Policy too.
 
-| Route             | Method | Guard                       | Body / notes                                                           |
-| ----------------- | ------ | --------------------------- | ---------------------------------------------------------------------- |
-| `/api/webhook`    | POST   | HMAC + allowlist + size cap | GitHub payload; replies 202/204 fast                                   |
-| `/api/rules`      | GET    | session + org member        | list rules for org                                                     |
-| `/api/rules`      | POST   | session + org member + zod  | `{ rule }` -> created                                                  |
-| `/api/rules/[id]` | PATCH  | session + org member + zod  | partial rule or `{ enabled }`                                          |
-| `/api/rules/test` | POST   | session + org member + zod  | `{ rule, sample: { payload?, diff? } }` -> `{ matched, matchedFiles }` |
-| `/api/alerts`     | GET    | session + org member        | proxied issue list                                                     |
-| `/api/health`     | GET    | none                        | `{ ok: true }`                                                         |
+## Issue events
 
-## Database
+| Action | Effect |
+|---|---|
+| `closed` / `reopened` | state; closed by the account that triggered it is a meta-alert |
+| `assigned` / `unassigned`, `edited` | assignees, title |
+| `deleted` / `transferred` | row dropped, meta-alert (checked before the label filter) |
+| `unlabeled` removing `pushguard` | row dropped, meta-alert |
+| anything else, by a person | acknowledgement |
 
-MongoDB. One file per entity in `lib/db/`, each owning its type, its collection
-declaration and its own indexes. Indexes are created idempotently on first
-connection; there are no migrations.
+`opened` and anything from a Bot are not acknowledgement: that is this app
+acting on its own ticket.
 
-| Collection                       | Holds                                                    |
-| -------------------------------- | -------------------------------------------------------- |
-| `installations`                  | one per account, plus encrypted model keys               |
-| `rules`                          | overrides only — the catalog itself ships as code        |
-| `rule_versions`                  | insert-only audit history                                |
-| `ai_rules`                       | rules a model answers                                    |
-| `ai_usage`                       | per-account daily review count, TTL 48h                  |
-| `alerts`                         | mirror of filed issues, so the feed costs no GitHub call |
-| `repos`                          | branch lists and default branch                          |
-| `repo_access`                    | who can read what, as a projection                       |
-| `push_actors`                    | first-push detection, one upsert per push                |
-| `scans`                          | scan results; findings are held, not filed               |
-| `code_index`                     | paths and identifiers per file, **never source**         |
-| `index_jobs` / `review_sessions` | background work queues                                   |
+## Events that are not heuristics
 
-Hard deletes happen only for projections the app can no longer maintain (a
-repository removed from the installation). Scans, rules and filed alerts are the
-account's own history and survive.
+`public` (a private repository made public) files a critical alert with no rule
+involved: the history is now readable by anyone, and making it private again
+does not un-publish it. `deploy_key` created, branch protection or ruleset
+edited or deleted file `deploy-key-added`, `protection-weakened` or
+`protection-deleted`: these are how access survives a credential rotation, and
+none shows in a push.
 
-## Environment
+## Push behaviour
 
-```
-MONGODB_URI
-GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, GITHUB_WEBHOOK_SECRET
-AUTH_SECRET, AUTH_GITHUB_ID, AUTH_GITHUB_SECRET
-ENCRYPTION_KEY            optional; required before an account can store a model key
-CRON_SECRET               optional; required once set
-```
+Diff scanning is a crowded market. The axis nothing else covers is the act of
+pushing: who, when, forced, and what was touched together. `all_of` asks whether
+one push touched all of several areas; `when.sender_first_push` is recorded in
+the webhook with one insert into `push_actors` (a retried job would otherwise
+see the sender as known). Neither is loud alone; both are context.
 
-There is no `GITHUB_ORG`, `ALERTS_REPO` or `ALERT_MENTION`: this is
-multi-tenant, and those are per-account settings in the database.
-
-`lib/env.ts` zod-validates all of these at boot; misconfiguration fails the
-deploy, not a 3 a.m. request.
-
-## Guards summary
-
-- HMAC signature, timing-safe compare, before any parsing
-- Event and size caps at the door
-- Regex patterns compile-checked and length-capped at write time (ReDoS)
-- Invalid rule rows logged and skipped, never crash the engine
-- Diff and AI input capped and truncation-flagged
-- AI is escalate-only; a regex match always tickets regardless of AI output
-- Diff content is attacker-controlled: AI prompt treats it as data, verdict
-  is advisory, nothing auto-closes
-- Sanitized errors to clients; structured logs with requestId server-side
-- Prevention still first: org ruleset blocking force pushes + org-wide 2FA
-  - `npm config set ignore-scripts true` remain the recommended baseline;
-    Pushguard is the detection layer
-
-## Out of scope v1 (with triggers to add)
-
-- Alerts table / analytics: add Postgres tables when issue search gets clumsy
-- Multi-org SaaS billing: `installations` table already keyed by org
-- Rate limiting on APIs: Upstash Redis if public abuse appears
-- Real queue for scans (QStash/SQS): when one scan exceeds the 60s function
-  cap, or scans/hour goes past roughly 1000
-- Deeper scans (full history, every branch): today's window is 50 commits on
-  the default branch, which costs one compare call per repository
-- Deep AST scanning: bolt Semgrep onto flagged pushes, never grow the engine
+Force pushes compare `after...before`, new tip as base, orphaned tip as head,
+and subtract surviving lines, which separates "removed from history" from
+"rebased".
 
 ## Scanning
 
 A scan answers "what would Pushguard say about this repository?" without waiting
-for the next push. Three GitHub reads per repository, metadata, the commit
-window, one compare across it, produce a `PushContext` the existing engine
-already knows how to evaluate.
+for a push. It cannot answer `when` rules (they describe a push event) and drops
+them via `scannableRules`; the force-push rule, the reason the product exists, is
+exactly the one a scan cannot see. Targets come from `repo_access`; the queue
+call re-checks it, and filing re-checks it per repository because findings
+outlive access. Reading uses the installation token, only for repositories
+already narrowed that way.
 
-A scan cannot answer every rule, and says so rather than guessing: `when` rules
-describe the push event, and an AI-only rule needs a paid read of the diff a
-scan deliberately skips. Both are dropped by `scannableRules`. The force-push
-rule. The reason the product exists, is exactly the one a scan cannot see,
-because a force push destroys the evidence. That is the argument for installing,
-made by the product rather than by the copy.
+## Blind spots are findings
 
-### Authorization
+A reader cannot tell "we did not look" from "nothing found", so every gap files
+a finding: `diff-not-fully-read`, `ai-rule-did-not-run`, `repo-index-incomplete`,
+`file-not-fully-read`, `ai-rule-left-its-scope`, `change-not-evaluated`,
+`github-rate-limited`, `dependency-not-checked`, `detonation-unavailable`,
+`detonation-timed-out`, `detonation-report-suspect`, and `delivery_missed` as a
+meta-alert. AI output can annotate or escalate an alert, never suppress one.
 
-The first version took a repository name in a text box and gated scanning on
-`memberScopes`, org membership from `GET /user/orgs`. That was wrong twice
-over. Org membership is not repository access, so any member of an installed
-org could read diffs from private repositories they cannot open on GitHub; and
-a free-text box makes _us_ decide what may be read, which is not a decision we
-have the information to make.
+## Environment
 
-Both are replaced by one rule: **GitHub decides.**
-`GET /user/installations/{id}/repositories`, called with the user's own token,
-returns exactly the repositories they have explicit read access to inside an
-installation. The picker renders that list; `enqueueScan` fetches it again and
-rejects anything not in it. `fileScanFindings` fetches it a third time, because
-findings outlive the access that produced them.
+`.env.example` documents every variable; `lib/env.ts` validates them at first
+use. `DATABASE_URL` (the `pushguard` role, transaction pooler), the `GITHUB_*`
+App settings, `AUTH_*`, `CRON_SECRET` (bearer for `/api/jobs/run`, also stored
+in Vault as `jobs_run_secret` beside `jobs_run_url`), optional `ENCRYPTION_KEY`
+(required before an org can store a model key or sink). `DATABASE_ADMIN_URL` is
+for migrations only.
 
-There is no unauthenticated path. Reading still happens with the installation
-token. It is the only credential that can fetch a diff. But only for
-repositories already narrowed by the check above.
+## Known gaps
 
-Branch selection runs through the same gate. `/api/scan-branches` re-fetches the
-accessible list before it will enumerate a repository's refs, and the branch name
-is validated as a git ref (slashes allowed, `..` and leading or trailing slashes
-refused) before it reaches `GET /commits?sha=`. A branch is only accepted
-alongside a single repository: an account-wide scan reads each repository's own
-default, because branch names are not shared across repositories.
-
-### The alerts feed
-
-Same rule, same reason. The feed was `requireMember(org)` plus a search on the
-installation token, which returns every repository the app was granted. So a
-member could read alert titles, repository names and issue links from private
-repositories they cannot open on GitHub. It now searches with the reader's own
-token, so GitHub returns only what they can already see.
-
-Filtering the installation-token results afterwards would have been the obvious
-patch and the wrong one: `total_count` comes back from GitHub before any
-filtering, so the feed would have promised "25 of 100" above three rows.
-
-One search still runs on an installation token, `findOpenAlertBySha`, the
-webhook's dedup check. It has no user in the request, is scoped to one
-repository the installation owns, and returns a boolean, so there is no access
-to narrow.
-
-## Guard rails, restated
-
-Every user-facing read of GitHub data goes through the caller's own token:
-scanning (`listUserInstallationRepos`), filing findings (the same call, again,
-at write time) and the alerts feed (`listAlertIssues`). Installation tokens are
-used only where no reader is present. The webhook path, or after the set of
-repositories has already been narrowed by one of those checks.
-
-## Push-behaviour rules
-
-Everything that reads a diff is a crowded market, secret scanning, Socket,
-Semgrep, CodeQL all do it, several of them better. The axis nothing else covers
-is the **act of pushing**: who, when, forced, and what was touched together.
-
-Two primitives serve it.
-
-`all_of` takes groups of globs and requires each group to be matched by some
-file in the _same_ push. `paths` asks "did this touch any of these?"; `all_of`
-asks "did one push touch all of these areas?". Which is the difference between
-a routine CI edit and a CI edit in the push that also rewrote who reviews it.
-It costs nothing extra: the changed-file list is already in the payload, and
-scans can answer it too.
-
-`when.sender_first_push` is the first stateful signal in the product. The
-engine stays pure, so the webhook answers it before evaluation and hands it in
-as a boolean, the same way `forced` arrives. One upsert into `push_actors`
-records the push and reports whether it inserted; the unique `_id` means two
-racing pushes cannot both be called the first. Branch deletions are skipped. They carry no commits, and letting one consume the "first push" would make the
-account's next real push look routine.
-
-Neither rule is loud on its own. A first push is not suspicious; it is context
-for everything else in the feed, which is why it is `medium` and not `high`.
-
-## Webhook-first, and why there is no cache
-
-Two different things get confused under "caching", and only one of them is here.
-
-A **cache** stores a copy and guesses when it went stale. A TTL, a
-revalidation, a window during which the app is knowingly wrong. There is none
-of that in this app any more. The one that existed, a 60-second rule cache, was
-removed: invalidation only reached the serverless instance that handled the
-write, so a rule someone disabled _because it was firing wrongly_ kept firing
-everywhere else for up to a minute. It saved one indexed Mongo query.
-
-A **projection** is different. GitHub tells us what changed, and we apply it.
-There is no expiry because there is no guess: the stored branch list is not a
-copy of GitHub's; it is the current state as GitHub last reported it.
-
-| Data                                     | First read                               | Kept current by                                           |
-| ---------------------------------------- | ---------------------------------------- | --------------------------------------------------------- |
-| Installation repos                       | one backfill per install                 | `installation`, `installation_repositories`, `repository` |
-| Teams                                    | one backfill per install                 | `team`                                                    |
-| Branches                                 | install backfill                         | `create`, `delete`, `push`                                |
-| Default branch, visibility               | same read, or free from any push         | `repository`, `public`, `push`                            |
-| **Who can read what**                    | `GET /collaborators` per repo at install | `member`, `membership`, `team`, `organization`            |
-| Alert state, assignment, acknowledgement | written when we file                     | `issues`, `issue_comment`                                 |
-| Push actors                              | ,                                        | `push`                                                    |
-
-Every `push` self-heals the record it touches, so a missed `create` or a
-repository that predates the subscription corrects itself on the next push
-rather than needing a resync job.
-
-### No GitHub call answers a request
-
-Every endpoint the browser can reach is served from MongoDB. Two GitHub calls
-survive on the write path, and both _are_ the action rather than a lookup:
-reading a repository in order to scan it, and creating the issue when someone
-files findings. There is no scanning without reading.
-
-Access. Which repositories a user may read, is the hard one, and it is a
-projection like the rest. It is seeded from `GET /collaborators`, which is
-GitHub's own flattening of org role, team grants and direct collaboration, so
-this app never reimplements that model. Grants are stored as a set of reasons
-rather than a boolean, because access overlaps: losing a team must not revoke
-someone who is also a direct collaborator.
-
-**The risk this buys, stated plainly.** Asking GitHub on every request could
-never be wrong. A projection can: GitHub does not emit an event for every way
-access can change, and a delivery can fail. A miss leaves someone with access
-they should have lost, and it does not expire on its own. Which is why
-`reconcileAccess` re-reads the collaborator lists on the cron rather than
-trusting the event stream forever.
-
-### Pull requests
-
-Open pull requests are a projection like the rest: `pull_requests` is seeded
-per repository at install, upserted by the `pull_request` webhook, and a closed
-or merged one is deleted. The tab reads it through the same `repo_access` gate
-as alerts. The GitHub App must subscribe to the `pull_request` event.
-
-Rules run on pushes and pull requests unless `on` narrows them: a pull request
-from a fork raises no push event in the base repository, so pull requests
-cannot be opt-in. On a pull request,
-`branches` matches the base, the branch the rule guards, and the shipped rules
-all bind to main. A pull request is evaluated as a whole, `base.sha...head.sha`, on opened, reopened, synchronize
-and ready_for_review, and the alert threads on repeat rather than filing again.
-The alert is an issue as always; the pull request gets one comment pointing at
-it, once per pull request. A head commit the branch push already flagged is
-not filed again: the pull request is attached to that alert and commented on,
-so one commit is one issue however many events carry it.
-
-### Issue operations, and which ones mean something
-
-The `issues` event carries twenty actions. Three change what we store, two end
-the record, and the rest only prove somebody looked.
-
-| Action                           | Effect                                   |
-| -------------------------------- | ---------------------------------------- |
-| `closed` / `reopened`            | state                                    |
-| `assigned` / `unassigned`        | the assignee list                        |
-| `edited`                         | title                                    |
-| `deleted` / `transferred`        | the row is dropped. It points at nothing |
-| `unlabeled` removing `pushguard` | the row is dropped. No longer ours       |
-| anything else, by a person       | acknowledgement only                     |
-
-`deleted` and `transferred` are checked _before_ the label filter, because by
-the time they arrive the label may already be gone with the issue.
-
-Two things are deliberately not acknowledgement: `opened`, which is this app
-filing the alert, and anything sent by a Bot, which is this app acting on its
-own ticket. Otherwise every alert would look attended the moment it was
-created.
-
-Acknowledgement and assignment answer different questions and both are kept.
-"Somebody glanced at this" is not "somebody owns this", and an unassigned
-critical is the one worth putting at the top of a feed.
-
-### The one event that is not a heuristic
-
-`public`. A private repository made public, files a critical alert with no
-rule involved. Every other detection is a judgement a rule can tune or turn
-off. This one is not: the code was private, someone made it public, and the
-whole history is now readable by anyone, including any credential ever
-committed to it. Making it private again does not un-publish what was fetched
-or indexed in between, and GitHub sends no inverse event, so there is nothing
-to wait for.
+- No blocking: pair with GitHub rulesets and org-wide 2FA.
+- New workflows on non-default branches run through `workflow_run` are not seen
+  (needs the Actions permission).
+- A careful payload can detect a GitHub-hosted runner; "nothing observed" from
+  detonation is weak evidence.

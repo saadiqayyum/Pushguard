@@ -1,4 +1,5 @@
 import { rulesFileSchema, type Rule } from "@/schemas/rule"
+import { aiAgents } from "./ai-agents"
 import { core } from "./core"
 import { exfiltration } from "./exfiltration"
 import { javascript } from "./javascript"
@@ -19,6 +20,7 @@ export const PACKS = [
   },
   { id: "secrets", title: "Secrets", blurb: "Credentials and keys committed to a repository" },
   { id: "ci", title: "CI", blurb: "Pipelines, which hold the credentials everything else wants" },
+  { id: "ai-agents", title: "AI agents", blurb: "Instructions and tools that coding agents trust without asking" },
   { id: "binary", title: "Binaries", blurb: "Artifacts committed where no diff can show their contents" },
   { id: "shell", title: "Shell", blurb: "Download-and-run, reverse shells, and files that execute on login" },
   { id: "container", title: "Containers & infra", blurb: "Dockerfiles, compose, Kubernetes, Terraform" },
@@ -38,6 +40,7 @@ const SOURCES: Record<PackId, readonly unknown[]> = {
   exfiltration,
   secrets,
   ci,
+  "ai-agents": aiAgents,
   binary,
   shell,
   container,

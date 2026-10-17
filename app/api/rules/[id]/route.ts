@@ -1,75 +1,57 @@
-import { NextResponse } from "next/server"
-import { db } from "@/lib/db"
+import { deleteRule, recordRuleVersion, saveRule } from "@/lib/db"
 import { AppError } from "@/lib/errors"
 import { logger } from "@/lib/logger"
-import { catalogById } from "@/lib/rules/catalog"
-import { clearOverride, resolveRules, serializeResolvedRule, upsertOverride } from "@/lib/rules"
-import { withErrorHandler } from "@/lib/route"
-import { requireManagedTenant } from "@/lib/tenant"
+import { resolveRules, serializeResolvedRule } from "@/lib/rules"
+import { respond, userRoute } from "@/lib/route"
+import { requireAdmin } from "@/lib/tenant"
 import { updateRuleBody } from "@/schemas/api"
-
+import { ruleSchema } from "@/schemas/rule"
+import { ruleRowOut } from "@/schemas/output"
 
 // Regex safety checks may take seconds each; see schemas/rule-safety.ts.
 export const maxDuration = 60
 
-export const PATCH = withErrorHandler("/api/rules/[id]", async (request, { params }) => {
+export const PATCH = userRoute("/api/rules/[id]", async (request, { params }) => {
   const { id } = await params
   const body = await updateRuleBody.parseAsync(await request.json())
-  const { owner, login } = await requireManagedTenant()
+  const { org, login } = await requireAdmin()
 
-  const current = (await resolveRules(owner)).find((rule) => rule.id === id)
+  const current = (await resolveRules(org)).find((rule) => rule.id === id)
   if (!current) throw new AppError("not_found", "Rule not found")
-
   if (body.rule && body.rule.id !== id) {
     throw new AppError("validation_failed", "Rule id cannot be changed; duplicate it instead")
   }
 
   const { origin, ...currentBody } = current
   const nextBody = body.rule ?? currentBody
-  const nextEnabled = body.enabled ?? current.enabled
-  const action = body.rule ? "updated" : nextEnabled ? "enabled" : "disabled"
+  const enabled = body.enabled ?? current.enabled
+  const action = body.rule ? "updated" : enabled ? "enabled" : "disabled"
 
-  await upsertOverride({ owner, ruleId: id, body: nextBody, enabled: nextEnabled, by: login })
-  await db.ruleVersions().insertOne({
-    _id: crypto.randomUUID(),
-    ruleId: id,
-    body: nextBody,
-    action,
-    changedBy: login,
-    changedAt: new Date(),
-  })
-  logger.info("rule_changed", { owner, ruleId: id, action, by: login, wasFrom: origin })
+  await saveRule(org, id, { body: nextBody, enabled, createdBy: login })
+  await recordRuleVersion({ org, ruleId: id, body: nextBody, action, changedBy: login })
+  logger.info("rule_changed", { org, ruleId: id, action, by: login, wasFrom: origin })
 
-  return NextResponse.json({
-    data: serializeResolvedRule({
-      ...nextBody,
-      enabled: nextEnabled,
-      origin: catalogById.has(id) ? "modified" : "custom",
-    }),
-  })
+  return respond(
+    ruleRowOut,
+    serializeResolvedRule({ ...nextBody, enabled, origin: origin === "custom" ? "custom" : "modified" }),
+  )
 })
 
-// Undo a change, rather than delete a rule.
-// For a rule somebody wrote, the override *is* the rule and this removes it.
-export const DELETE = withErrorHandler("/api/rules/[id]", async (_request, { params }) => {
+// Undo a change. For a rule somebody wrote, the override is the rule.
+export const DELETE = userRoute("/api/rules/[id]", async (_request, { params }) => {
   const { id } = await params
-  const { owner, login } = await requireManagedTenant()
+  const { org, login } = await requireAdmin()
 
-  const cleared = await clearOverride(owner, id)
-  if (!cleared) throw new AppError("not_found", "No change to undo for that rule")
-
-  await db.ruleVersions().insertOne({
-    _id: crypto.randomUUID(),
+  if (!(await deleteRule(org, id))) throw new AppError("not_found", "No change to undo for that rule")
+  const restored = (await resolveRules(org)).find((rule) => rule.id === id)
+  await recordRuleVersion({
+    org,
     ruleId: id,
-    body: catalogById.get(id) ?? null,
-    action: catalogById.has(id) ? "reverted" : "deleted",
+    body: restored ? ruleSchema.strip().parse(restored) : null,
+    action: restored ? "reverted" : "deleted",
     changedBy: login,
-    changedAt: new Date(),
   })
-  logger.info("rule_override_cleared", { owner, ruleId: id, by: login, catalog: catalogById.has(id) })
+  logger.info("rule_override_cleared", { org, ruleId: id, by: login, catalog: Boolean(restored) })
 
-  const restored = catalogById.get(id)
-  return NextResponse.json({
-    data: restored ? serializeResolvedRule({ ...restored, origin: "catalog" }) : null,
-  })
+  return respond(ruleRowOut.nullable(), restored ? serializeResolvedRule(restored) : null)
 })

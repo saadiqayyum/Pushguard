@@ -1,0 +1,93 @@
+// Files coding agents read as instructions or load as tools, and text aimed at AI reviewers.
+const AGENT_INSTRUCTIONS = [
+  "**/CLAUDE.md",
+  "**/CLAUDE.local.md",
+  "**/AGENTS.md",
+  "**/GEMINI.md",
+  "**/.cursorrules",
+  "**/.windsurfrules",
+  "**/.clinerules",
+  "**/.cursor/rules/**",
+  "**/.windsurf/rules/**",
+  "**/.github/copilot-instructions.md",
+  "**/.github/instructions/**",
+  "**/.github/prompts/**",
+  "**/.claude/agents/**",
+  "**/.claude/commands/**",
+  "**/.claude/skills/**",
+]
+
+export const aiAgents = [
+  {
+    id: "agent-instructions-changed",
+    description: "Instructions a coding agent follows were created or modified",
+    severity: "high",
+    paths: AGENT_INSTRUCTIONS,
+    change_type: ["added", "modified"],
+  },
+  {
+    id: "agent-instructions-hidden-text",
+    description: "Invisible or bidi characters in agent instructions, which a reviewer cannot see and the agent obeys",
+    severity: "critical",
+    paths: AGENT_INSTRUCTIONS,
+    unicode_risk: "controls",
+  },
+  {
+    id: "agent-tool-config-changed",
+    description: "An MCP server or agent settings file, which can run commands on the developer's machine",
+    severity: "high",
+    paths: [
+      "**/.mcp.json",
+      "**/mcp.json",
+      "**/.vscode/mcp.json",
+      "**/.cursor/mcp.json",
+      "**/claude_desktop_config.json",
+      "**/.claude/settings.json",
+      "**/.claude/settings.local.json",
+      "**/.gemini/settings.json",
+      "**/.cursor/hooks.json",
+      "**/.cursor/environment.json",
+      "**/.codex/config.toml",
+    ],
+    change_type: ["added", "modified"],
+  },
+  {
+    id: "agent-hook-or-auto-approve",
+    description: "An agent hook that runs a command, or agent approvals switched off",
+    severity: "critical",
+    paths: [
+      "**/.claude/settings.json",
+      "**/.claude/settings.local.json",
+      "**/.cursor/hooks.json",
+      "**/.gemini/settings.json",
+      "**/.vscode/settings.json",
+      "**/*.code-workspace",
+    ],
+    added_lines: [
+      '"hooks"\\s*:',
+      '"(SessionStart|SessionEnd|PreToolUse|PostToolUse|UserPromptSubmit|Stop|SubagentStop|PreCompact|Notification)"\\s*:',
+      '"defaultMode"\\s*:\\s*"bypassPermissions"|"enableAllProjectMcpServers"\\s*:\\s*true|"apiKeyHelper"\\s*:',
+      '"chat\\.tools\\.(global\\.)?autoApprove"\\s*:\\s*true',
+    ],
+  },
+  {
+    id: "agent-cli-permission-skip",
+    description: "A coding-agent CLI invoked with its permission checks disabled",
+    severity: "high",
+    added_lines:
+      "--dangerously-skip-permissions|--dangerously-bypass-approvals|--trust-all-tools|--allow-all-tools|--yolo\\b|--approval-mode[= ]yolo",
+  },
+  {
+    id: "agent-prompt-injection",
+    description: "Text written to steer an AI reviewer or agent rather than a human reader",
+    severity: "high",
+    added_lines: [
+      "[Ii]gnore (all |any )?(the )?(previous|prior|above|earlier) (instructions|prompts?|rules)|IGNORE (ALL )?PREVIOUS INSTRUCTIONS",
+      "[Dd]o not (flag|report|mention) (this|these|it)|[Aa]pprove this (PR|pull request|change|commit)",
+      "[Yy]ou are now (a|an) |[Dd]isregard (all |the )?(previous|prior|above|your) |[Nn]ew system prompt|</?system>|[Nn]ote to (the )?AI",
+      "[Tt]his (code|change|file|function|commit|PR) (has been|was|is) (already )?(reviewed|audited|verified|approved)",
+      "[Ss]ecurity[- ](reviewed|audited|approved|cleared)\\b|[Ss]afe to (merge|ignore|approve)\\b",
+      "(scanner|scan|audit) (output|results?):?\\s*0 (findings|issues|vulnerabilities)",
+    ],
+  },
+] as const

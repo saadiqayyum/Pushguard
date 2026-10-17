@@ -19,14 +19,86 @@ export const ci = [
     description: "An action pinned to a tag or branch rather than a commit SHA",
     severity: "high",
     paths: [".github/workflows/**", ".github/actions/**"],
-    added_lines: "@(?![0-9a-f]{40})[A-Za-z0-9._-]{1,50}",
+    added_lines: "^[\\s-]*uses:\\s*['\"]?[^\\s@'\"#]+@(?![0-9a-f]{40}\\b)",
   },
   {
     id: "ci-secret-exfiltration",
     description: "A workflow step piping secrets or the environment to the network",
     severity: "critical",
-    paths: [".github/workflows/**", "**/.gitlab-ci.yml", "**/azure-pipelines.yml", "**/Jenkinsfile"],
-    added_lines: "printenv|env\\s*\\||curl\\s+(-d|--data|-F|-T)|base64\\s+-w|nc\\s+-",
+    paths: [".github/workflows/**", ".github/actions/**", "**/.gitlab-ci.yml", "**/azure-pipelines.yml", "**/Jenkinsfile"],
+    added_lines: [
+      "printenv|env\\s*\\||\\benv\\s*>\\s*\\S",
+      "curl\\s+(-[sSkLfv]+\\s+)?(-X\\s*POST\\s+)?(-d|--data|-F|-T)|wget\\s+(-q\\s+)?--post-(data|file)",
+      "base64\\s+-w|base64[^|]{0,60}\\|\\s*base64",
+      "nc\\s+-",
+      "toJSON\\(\\s*secrets\\s*\\)",
+      "/proc/[^\\s/]{1,12}/(mem|environ)\\b|Runner\\.Worker",
+    ],
+  },
+  {
+    id: "ci-script-injection",
+    description: "Attacker-controlled event text (titles, bodies, branch names) expanded inside a script",
+    severity: "critical",
+    paths: [".github/workflows/**", ".github/actions/**"],
+    added_lines:
+      "^(?!\\s*[\\w-]+:\\s*['\"]?\\$\\{\\{).*\\$\\{\\{\\s*github\\.(head_ref|event\\.(issue\\.(title|body)|pull_request\\.(title|body|head\\.(ref|label))|comment\\.body|review\\.body|review_comment\\.body|discussion\\.(title|body)|head_commit\\.(message|author)|commits|pages|workflow_run\\.head_(branch|commit)))",
+  },
+  {
+    id: "ci-checkout-pr-head",
+    description: "A workflow checking out the pull request's own code, which under pull_request_target runs it with secrets",
+    severity: "high",
+    paths: [".github/workflows/**", ".github/actions/**"],
+    added_lines: [
+      "ref:\\s*['\"]?\\$\\{\\{\\s*github\\.(head_ref|event\\.(pull_request\\.head\\.(sha|ref)|workflow_run\\.head_(sha|branch)))",
+      "refs/pull/\\$\\{\\{|gh pr checkout",
+    ],
+  },
+  {
+    id: "ci-runner-registration",
+    description: "A self-hosted Actions runner downloaded or registered from repository code",
+    severity: "high",
+    added_lines: ["config\\.(sh|cmd)\\s[^\\n]{0,120}--(url|token)\\b", "actions-runner-(linux|osx|win)-", "\\bsvc\\.sh\\s+install"],
+  },
+  {
+    id: "worm-persistence-indicator",
+    description: "A file name, runner name or commit message left by a known repository worm",
+    severity: "critical",
+    any_of: [
+      {
+        paths: [
+          ".github/workflows/shai-hulud*.y*ml",
+          ".github/workflows/formatter_[0-9]*.y*ml",
+          ".github/workflows/github_actions_security.y*ml",
+        ],
+        change_type: ["added", "modified"],
+      },
+      { commit_message: ["^Shai-Hulud( Migration)?$", "^Add Github Actions Security workflow$"] },
+      { added_lines: "SHA1HULUD" },
+    ],
+  },
+  {
+    id: "worm-workflow-lookalike",
+    description: "A new workflow named or triggered like a known worm's backdoor (discussion trigger, security-audit, format-check)",
+    severity: "high",
+    any_of: [
+      {
+        paths: [
+          ".github/workflows/discussion.y*ml",
+          ".github/workflows/security-audit.y*ml",
+          ".github/workflows/format-check.y*ml",
+        ],
+        change_type: ["added"],
+      },
+      { paths: [".github/workflows/**"], added_lines: "^\\s*on:[\\s\\[]*discussion|^\\s*discussion(_comment)?:" },
+    ],
+  },
+  {
+    id: "ci-agent-shaped-push",
+    description: "A workflow changed outside working hours with no pull request, the shape of a stolen token at work",
+    severity: "high",
+    paths: [".github/workflows/**", ".github/actions/**"],
+    change_type: ["added", "modified"],
+    when: { unreviewed: true, hour_utc: { not_between: [4, 18] } },
   },
   {
     id: "ci-self-hosted-runner",
@@ -96,7 +168,12 @@ export const shell = [
     id: "shell-pipe-to-interpreter",
     description: "Downloading a script and piping it straight into a shell",
     severity: "critical",
-    added_lines: "\\|\\s*(sudo\\s+)?(sh|bash|zsh|python|perl|ruby|node)\\b",
+    added_lines: [
+      "\\|\\s*(sudo\\s+)?(sh|bash|zsh|python|perl|ruby|node)\\b",
+      "\\b(ba|z)?sh\\s+(-c\\s+)?[\"']?(\\$\\(|<\\()\\s*(curl|wget)\\b",
+      "\\biex\\s*\\(|Invoke-Expression|\\|\\s*iex\\b",
+      "powershell(\\.exe)?\\s[^\\n]{0,40}-(e|enc|EncodedCommand)\\s",
+    ],
   },
   {
     id: "shell-reverse-connection",
@@ -154,7 +231,6 @@ export const binary = [
       "**/*.so",
       "**/*.so.*",
       "**/*.dylib",
-      "**/*.bin",
       "**/*.o",
       "**/*.a",
       "**/*.msi",
@@ -175,11 +251,18 @@ export const binary = [
   },
   {
     id: "binary-archive-committed",
-    description: "An archive committed, whose contents no diff can show",
+    description: "An archive or opaque blob committed, whose contents no diff can show",
     severity: "medium",
-    paths: ["**/*.zip", "**/*.tar", "**/*.tar.gz", "**/*.tgz", "**/*.7z", "**/*.rar", "**/*.xz"],
+    paths: ["**/*.zip", "**/*.tar", "**/*.tar.gz", "**/*.tgz", "**/*.7z", "**/*.rar", "**/*.xz", "**/*.bin"],
     exclude_paths: ["**/test/**", "**/tests/**", "**/fixtures/**", "**/__fixtures__/**", "**/testdata/**"],
     change_type: ["added"],
+  },
+  {
+    id: "test-fixture-opaque-blob",
+    description: "An opaque or compressed blob added under a test directory, where payloads have hidden as corrupt samples",
+    severity: "medium",
+    paths: ["**/{test,tests,testdata,fixtures,__fixtures__,spec}/**/*.{bin,dat,raw,blob,img,xz,lzma,gz,bz2,zst,lz4,zip,7z,tar}"],
+    change_type: ["added", "modified"],
   },
 ] as const
 

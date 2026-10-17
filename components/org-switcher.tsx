@@ -9,6 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 
 const ORG_COOKIE = "pushguard_org"
 const ALL_ORGS = "__all__"
@@ -23,7 +24,7 @@ export function OrgSwitcher({
   allOrgs?: boolean
 }) {
   const router = useRouter()
-  const allowAll = usePathname() === "/dashboard"
+  const allowAll = ["/dashboard", "/dashboard/alerts"].includes(usePathname())
 
   return (
     <Select
@@ -33,10 +34,15 @@ export function OrgSwitcher({
         router.refresh()
       }}
     >
-      <SelectTrigger size="sm" className="min-w-0 max-w-[8rem] shrink gap-2 sm:max-w-[14rem]">
-        <Building2 className="size-4 shrink-0 text-muted-foreground" />
-        <SelectValue />
-      </SelectTrigger>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <SelectTrigger size="sm" aria-label="Organization" className="w-44 max-w-full gap-2">
+            <Building2 className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+            <SelectValue placeholder="Organization" className="min-w-0 flex-1 text-left" />
+          </SelectTrigger>
+        </TooltipTrigger>
+        <TooltipContent>Organization</TooltipContent>
+      </Tooltip>
       <SelectContent>
         {allowAll && <SelectItem value={ALL_ORGS}>All organizations</SelectItem>}
         {orgs.map((org) => (

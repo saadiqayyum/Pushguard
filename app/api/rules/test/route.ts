@@ -1,14 +1,13 @@
-import { NextResponse } from "next/server"
-import { requireUser } from "@/lib/auth"
-import { evaluateRule, matchAddedLines } from "@/lib/engine"
-import { withErrorHandler } from "@/lib/route"
+import { addedLinesByFile } from "@/lib/diff-lines"
+import { confirmContentMatches, evaluateRules } from "@/lib/engine"
+import { respond, userRoute } from "@/lib/route"
 import { testRuleBody } from "@/schemas/api"
+import { testResultOut } from "@/schemas/output"
 
-export const POST = withErrorHandler("/api/rules/test", async (request) => {
-  await requireUser()
+export const POST = userRoute("/api/rules/test", async (request) => {
   const { rule, sample } = testRuleBody.parse(await request.json())
 
-  const match = evaluateRule(rule, {
+  const matches = evaluateRules([rule], {
     repo: sample.repo,
     branch: sample.branch,
     forced: sample.forced,
@@ -22,27 +21,19 @@ export const POST = withErrorHandler("/api/rules/test", async (request) => {
     commitMessages: sample.commitMessages,
   })
 
-  if (!match) {
-    return NextResponse.json({
-      data: { matched: false, matchedFiles: [], matchedLines: [], matchedMessages: [] },
-    })
+  if (matches.length === 0) {
+    return respond(testResultOut, { matched: false, matchedFiles: [], matchedLines: [], matchedMessages: [] })
   }
 
-  const addedLines = sample.diff
-    ? sample.diff
-        .split("\n")
-        .filter((line) => line.startsWith("+") && !line.startsWith("+++"))
-        .map((line) => line.slice(1))
-    : []
-  const matchedLines = rule.added_lines ? matchAddedLines(rule, addedLines) : []
-  const contentSatisfied = !rule.added_lines || !sample.diff || matchedLines.length > 0
+  const paths = sample.files.map((file) => file.path)
+  const addedLines = sample.diff ? addedLinesByFile(sample.diff, paths.length > 0 ? paths : [""]) : null
+  const [confirmed] = confirmContentMatches(matches, addedLines)
+  const match = confirmed ?? matches[0]
 
-  return NextResponse.json({
-    data: {
-      matched: contentSatisfied,
-      matchedFiles: match.matchedFiles,
-      matchedLines: matchedLines.slice(0, 50),
-      matchedMessages: match.matchedMessages,
-    },
+  return respond(testResultOut, {
+    matched: Boolean(confirmed),
+    matchedFiles: match.matchedFiles.filter(Boolean),
+    matchedLines: (confirmed?.matchedLines ?? []).slice(0, 50),
+    matchedMessages: match.matchedMessages,
   })
 })

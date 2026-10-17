@@ -1,6 +1,8 @@
 import { contextPaths, filesForRule, fitToBudget, MAX_TOTAL_CHARS } from "@/lib/ai-rule-scope"
 import { compact } from "@/lib/compact"
-import { aiCredentials } from "@/lib/ai"
+import { aiCredentials, withOverrides } from "@/lib/ai"
+import { budgetFinding } from "@/lib/ai-budget"
+import { pushMeterFor, spendFor } from "@/lib/ai-call"
 import { toFinding } from "@/lib/finding"
 import { fetchBlobs } from "@/lib/github"
 import { logger } from "@/lib/logger"
@@ -8,7 +10,7 @@ import { runReview } from "@/lib/review-graph"
 import { aiRuleSchema, type AiRule } from "@/schemas/ai-rule"
 import type { ChangedFile, PushContext } from "@/lib/engine"
 import type { InstallationDoc, ScanFinding } from "@/lib/db"
-import { db, claimAiReview } from "@/lib/db"
+import { aiRulesFor, claimAiReview } from "@/lib/db"
 import { MAX_AI_REVIEWS_PER_DAY } from "@/schemas/ai-rule"
 
 // Rules a model answers, run on their own terms.
@@ -27,8 +29,8 @@ const NOT_RUN_FINDING = {
   description: "An AI rule could not be answered, so this push was never reviewed against it",
 }
 
-export async function getActiveAiRules(owner: string): Promise<AiRule[]> {
-  const docs = await db.aiRules().find({ owner, enabled: true }).toArray()
+export async function getActiveAiRules(org: string): Promise<AiRule[]> {
+  const docs = await aiRulesFor(org, true)
   const parsed: AiRule[] = []
   for (const doc of docs) {
     const result = aiRuleSchema.safeParse(doc.body)
@@ -50,7 +52,7 @@ export async function runAiRules(
   // because the person starting the scan chose what this run should cost.
   keyOverride?: string,
 ): Promise<ScanFinding[]> {
-  const all = await getActiveAiRules(installation.installedBy)
+  const all = await getActiveAiRules(installation.org)
   if (all.length === 0) return []
 
   // `repository` rules navigate the whole tree through tools and run as their
@@ -66,6 +68,7 @@ export async function runAiRules(
   const findings: ScanFinding[] = []
   const compaction = { saved: 0, truncated: 0 }
   const deadline = AbortSignal.timeout(AI_PASS_BUDGET_MS)
+  const push = pushMeterFor(installation)
   let reached = 0
 
   const sources = new Map<string, string | null>()
@@ -82,7 +85,8 @@ export async function runAiRules(
     if (deadline.aborted) break
     reached++
 
-    const credentials = aiCredentials(installation, keyOverride ?? rule.key)
+    const base = await aiCredentials(installation, keyOverride ?? rule.key)
+    const credentials = base && withOverrides(base, rule)
     if (!credentials) {
       logger.info("ai_rule_skipped_no_key", { rule: rule.id })
       continue
@@ -115,8 +119,8 @@ export async function runAiRules(
     }
     if (Object.keys(documents).length === 0) continue
 
-    if (!(await claimAiReview(installation.installedBy, MAX_AI_REVIEWS_PER_DAY))) {
-      logger.warn("ai_daily_cap_reached", { owner: installation.installedBy, repo, rule: rule.id })
+    if (!(await claimAiReview(installation.org, MAX_AI_REVIEWS_PER_DAY))) {
+      logger.warn("ai_daily_cap_reached", { org: installation.org, repo, rule: rule.id })
       findings.push(
         toFinding(NOT_RUN_FINDING, repo, [], [
           `This account has used its ${MAX_AI_REVIEWS_PER_DAY} model reviews for today.`,
@@ -127,15 +131,31 @@ export async function runAiRules(
     }
 
     const others = changed.map((file) => file.path).filter((path) => !(path in documents))
-    const verdicts = await runReview(
+    const outcome = await runReview(
       credentials,
+      spendFor(installation, push, credentials, rule.max_input_tokens),
       documents,
       contextPaths(others),
       rule.prompt,
       deadline,
     )
 
-    if (verdicts === null) {
+    if ("exhausted" in outcome) {
+      const left = outcome.exhausted.scope === "run" ? [] : rules.slice(reached).map((entry) => entry.rule.id)
+      findings.push(
+        budgetFinding(repo, Object.keys(documents), outcome.exhausted, [
+          `rule \`${rule.id}\``,
+          ...left.map((id) => `rule \`${id}\``),
+        ].join(", ")),
+      )
+      if (left.length > 0) {
+        reached = rules.length
+        break
+      }
+      continue
+    }
+
+    if ("failed" in outcome) {
       findings.push(
         toFinding(NOT_RUN_FINDING, repo, Object.keys(documents), [
           `Rule \`${rule.id}\` was not answered by ${credentials.provider}/${credentials.model}. If this keeps happening, narrow the rule's paths so it sends less, or use a faster model.`,
@@ -144,6 +164,7 @@ export async function runAiRules(
       continue
     }
 
+    const verdicts = outcome.verdicts
     for (const verdict of verdicts) {
       findings.push(
         toFinding(

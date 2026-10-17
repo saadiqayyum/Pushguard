@@ -1,0 +1,818 @@
+{
+  "actors": [
+    {
+      "id": "right9ctrl",
+      "name": "right9ctrl",
+      "aliases": [],
+      "mitreId": null,
+      "summary": "npm persona given maintainer access to event-stream in 2018, which then depended on flatmap-stream@0.1.1 carrying a payload targeting a cryptocurrency wallet app.",
+      "references": [
+        "https://github.com/dominictarr/event-stream/issues/116"
+      ]
+    },
+    {
+      "id": "jia-tan",
+      "name": "Jia Tan",
+      "aliases": [],
+      "mitreId": null,
+      "summary": "Persona who gained XZ Utils release rights via social engineering and shipped a backdoor in xz 5.6.0 and 5.6.1 (CVE-2024-3094), hidden in binary test files.",
+      "references": [
+        "https://www.openwall.com/lists/oss-security/2024/03/29/4",
+        "https://www.akamai.com/blog/security-research/critical-linux-backdoor-xz-utils-discovered-what-to-know"
+      ]
+    },
+    {
+      "id": "shai-hulud-operators",
+      "name": "Shai-Hulud operators",
+      "aliases": [
+        "Sha1-Hulud"
+      ],
+      "mitreId": null,
+      "summary": "Self-propagating npm worm (Sept 2025) stealing secrets via TruffleHog and a GitHub workflow; second wave Nov 2025 ('Sha1-Hulud: The Second Coming') used a Bun-based payload.",
+      "references": [
+        "https://www.stepsecurity.io/blog/ctrl-tinycolor-and-40-npm-packages-compromised",
+        "https://www.wiz.io/blog/shai-hulud-2-0-ongoing-supply-chain-attack",
+        "https://www.aikido.dev/blog/shai-hulud-strikes-again-hitting-zapier-ensdomains"
+      ]
+    },
+    {
+      "id": "s1ngularity-operators",
+      "name": "s1ngularity operators",
+      "aliases": [
+        "Nx compromise"
+      ],
+      "mitreId": null,
+      "summary": "Malicious nx and @nx/* versions published Aug 26, 2025 with a postinstall script that harvested secrets and uploaded them to public repos named s1ngularity-repository.",
+      "references": [
+        "https://github.com/nrwl/nx/security/advisories/GHSA-cxm3-wv7p-598c"
+      ]
+    },
+    {
+      "id": "ghostaction-operators",
+      "name": "GhostAction operators",
+      "aliases": [],
+      "mitreId": null,
+      "summary": "Sept 2025 campaign pushing a malicious GitHub Actions workflow to many repos that exfiltrated CI secrets to attacker endpoints (GitGuardian).",
+      "references": [
+        "https://blog.gitguardian.com/ghostaction-campaign-3-325-secrets-stolen/"
+      ]
+    },
+    {
+      "id": "chalk-debug-operators",
+      "name": "chalk/debug npm compromise operators",
+      "aliases": [],
+      "mitreId": null,
+      "summary": "Sept 8, 2025 phishing (npmjs.help) of a maintainer led to malicious versions of chalk, debug and 16 other packages with a crypto-wallet-hijacking payload.",
+      "references": [
+        "https://www.aikido.dev/blog/npm-debug-and-chalk-packages-compromised"
+      ]
+    },
+    {
+      "id": "ua-parser-js-hijack",
+      "name": "ua-parser-js hijackers",
+      "aliases": [],
+      "mitreId": null,
+      "summary": "Oct 2021 hijack of the ua-parser-js npm account; versions 0.7.29, 0.8.0 and 1.0.0 shipped malware.",
+      "references": [
+        "https://github.com/advisories/GHSA-pjwm-rvh2-c87w"
+      ]
+    },
+    {
+      "id": "lazarus-group",
+      "name": "Lazarus Group",
+      "aliases": [
+        "Labyrinth Chollima",
+        "HIDDEN COBRA",
+        "Guardians of Peace",
+        "ZINC",
+        "NICKEL ACADEMY",
+        "Diamond Sleet"
+      ],
+      "mitreId": "G0032",
+      "summary": "North Korean state-sponsored threat group (MITRE G0032).",
+      "references": [
+        "https://attack.mitre.org/groups/G0032/"
+      ]
+    },
+    {
+      "id": "contagious-interview",
+      "name": "Contagious Interview",
+      "aliases": [
+        "DeceptiveDevelopment",
+        "Gwisin Gang",
+        "Tenacious Pungsan",
+        "DEV#POPPER",
+        "PurpleBravo",
+        "TAG-121"
+      ],
+      "mitreId": "G1052",
+      "summary": "DPRK-linked campaign luring developers with fake job interviews and malicious npm packages delivering BeaverTail and InvisibleFerret.",
+      "references": [
+        "https://attack.mitre.org/groups/G1052/",
+        "https://securitylabs.datadoghq.com/articles/tenacious-pungsan-dprk-threat-actor-contagious-interview/"
+      ]
+    }
+  ],
+  "indicators": [
+    {
+      "actorId": "right9ctrl",
+      "campaign": "event-stream",
+      "kind": "package",
+      "value": "npm:flatmap-stream@0.1.1",
+      "firstSeen": "2018-11-20",
+      "references": [
+        "https://github.com/dominictarr/event-stream/issues/116"
+      ]
+    },
+    {
+      "actorId": "right9ctrl",
+      "campaign": "event-stream",
+      "kind": "package",
+      "value": "npm:event-stream@3.3.6",
+      "firstSeen": "2018-11-20",
+      "references": [
+        "https://github.com/dominictarr/event-stream/issues/116"
+      ]
+    },
+    {
+      "actorId": "right9ctrl",
+      "campaign": "event-stream",
+      "kind": "string",
+      "value": "right9ctrl",
+      "firstSeen": "2018-11-20",
+      "references": [
+        "https://github.com/dominictarr/event-stream/issues/116"
+      ]
+    },
+    {
+      "actorId": "jia-tan",
+      "campaign": "xz-utils backdoor",
+      "kind": "file_name",
+      "value": "bad-3-corrupt_lzma2.xz",
+      "firstSeen": "2024-03-29",
+      "references": [
+        "https://www.openwall.com/lists/oss-security/2024/03/29/4"
+      ]
+    },
+    {
+      "actorId": "jia-tan",
+      "campaign": "xz-utils backdoor",
+      "kind": "file_name",
+      "value": "good-large_compressed.lzma",
+      "firstSeen": "2024-03-29",
+      "references": [
+        "https://www.openwall.com/lists/oss-security/2024/03/29/4"
+      ]
+    },
+    {
+      "actorId": "shai-hulud-operators",
+      "campaign": "Shai-Hulud",
+      "kind": "file_name",
+      "value": "shai-hulud-workflow.yml",
+      "firstSeen": "2025-09-15",
+      "references": [
+        "https://www.stepsecurity.io/blog/ctrl-tinycolor-and-40-npm-packages-compromised"
+      ]
+    },
+    {
+      "actorId": "shai-hulud-operators",
+      "campaign": "Shai-Hulud",
+      "kind": "url",
+      "value": "https://webhook.site/bb8ca5f6-4175-45d2-b042-fc9ebb8170b7",
+      "firstSeen": "2025-09-15",
+      "references": [
+        "https://www.stepsecurity.io/blog/ctrl-tinycolor-and-40-npm-packages-compromised"
+      ]
+    },
+    {
+      "actorId": "shai-hulud-operators",
+      "campaign": "Shai-Hulud",
+      "kind": "package",
+      "value": "npm:@ctrl/tinycolor@4.1.1",
+      "firstSeen": "2025-09-15",
+      "references": [
+        "https://www.stepsecurity.io/blog/ctrl-tinycolor-and-40-npm-packages-compromised"
+      ]
+    },
+    {
+      "actorId": "shai-hulud-operators",
+      "campaign": "Shai-Hulud",
+      "kind": "package",
+      "value": "npm:@ctrl/tinycolor@4.1.2",
+      "firstSeen": "2025-09-15",
+      "references": [
+        "https://www.stepsecurity.io/blog/ctrl-tinycolor-and-40-npm-packages-compromised"
+      ]
+    },
+    {
+      "actorId": "shai-hulud-operators",
+      "campaign": "Shai-Hulud 2.0",
+      "kind": "file_name",
+      "value": "setup_bun.js",
+      "firstSeen": "2025-11-24",
+      "references": [
+        "https://www.aikido.dev/blog/shai-hulud-strikes-again-hitting-zapier-ensdomains"
+      ]
+    },
+    {
+      "actorId": "shai-hulud-operators",
+      "campaign": "Shai-Hulud 2.0",
+      "kind": "file_name",
+      "value": "bun_environment.js",
+      "firstSeen": "2025-11-24",
+      "references": [
+        "https://www.aikido.dev/blog/shai-hulud-strikes-again-hitting-zapier-ensdomains"
+      ]
+    },
+    {
+      "actorId": "shai-hulud-operators",
+      "campaign": "Shai-Hulud 2.0",
+      "kind": "file_name",
+      "value": "truffleSecrets.json",
+      "firstSeen": "2025-11-24",
+      "references": [
+        "https://www.wiz.io/blog/shai-hulud-2-0-ongoing-supply-chain-attack"
+      ]
+    },
+    {
+      "actorId": "shai-hulud-operators",
+      "campaign": "Shai-Hulud 2.0",
+      "kind": "file_name",
+      "value": ".github/workflows/formatter_123456789.yml",
+      "firstSeen": "2025-11-24",
+      "references": [
+        "https://www.wiz.io/blog/shai-hulud-2-0-ongoing-supply-chain-attack"
+      ]
+    },
+    {
+      "actorId": "shai-hulud-operators",
+      "campaign": "Shai-Hulud 2.0",
+      "kind": "string",
+      "value": "SHA1HULUD",
+      "firstSeen": "2025-11-24",
+      "references": [
+        "https://www.wiz.io/blog/shai-hulud-2-0-ongoing-supply-chain-attack"
+      ]
+    },
+    {
+      "actorId": "shai-hulud-operators",
+      "campaign": "Shai-Hulud 2.0",
+      "kind": "string",
+      "value": "Sha1-Hulud: The Second Coming",
+      "firstSeen": "2025-11-24",
+      "references": [
+        "https://www.aikido.dev/blog/shai-hulud-strikes-again-hitting-zapier-ensdomains"
+      ]
+    },
+    {
+      "actorId": "shai-hulud-operators",
+      "campaign": "Shai-Hulud 2.0",
+      "kind": "string",
+      "value": "Sha1-Hulud: The Continued Coming",
+      "firstSeen": "2025-11-25",
+      "references": [
+        "https://www.wiz.io/blog/shai-hulud-2-0-ongoing-supply-chain-attack"
+      ]
+    },
+    {
+      "actorId": "s1ngularity-operators",
+      "campaign": "s1ngularity",
+      "kind": "package",
+      "value": "npm:nx@21.5.0",
+      "firstSeen": "2025-08-26",
+      "references": [
+        "https://github.com/nrwl/nx/security/advisories/GHSA-cxm3-wv7p-598c"
+      ]
+    },
+    {
+      "actorId": "s1ngularity-operators",
+      "campaign": "s1ngularity",
+      "kind": "package",
+      "value": "npm:nx@20.9.0",
+      "firstSeen": "2025-08-26",
+      "references": [
+        "https://github.com/nrwl/nx/security/advisories/GHSA-cxm3-wv7p-598c"
+      ]
+    },
+    {
+      "actorId": "s1ngularity-operators",
+      "campaign": "s1ngularity",
+      "kind": "package",
+      "value": "npm:nx@20.10.0",
+      "firstSeen": "2025-08-26",
+      "references": [
+        "https://github.com/nrwl/nx/security/advisories/GHSA-cxm3-wv7p-598c"
+      ]
+    },
+    {
+      "actorId": "s1ngularity-operators",
+      "campaign": "s1ngularity",
+      "kind": "package",
+      "value": "npm:nx@21.6.0",
+      "firstSeen": "2025-08-26",
+      "references": [
+        "https://github.com/nrwl/nx/security/advisories/GHSA-cxm3-wv7p-598c"
+      ]
+    },
+    {
+      "actorId": "s1ngularity-operators",
+      "campaign": "s1ngularity",
+      "kind": "package",
+      "value": "npm:nx@20.11.0",
+      "firstSeen": "2025-08-26",
+      "references": [
+        "https://github.com/nrwl/nx/security/advisories/GHSA-cxm3-wv7p-598c"
+      ]
+    },
+    {
+      "actorId": "s1ngularity-operators",
+      "campaign": "s1ngularity",
+      "kind": "package",
+      "value": "npm:nx@21.7.0",
+      "firstSeen": "2025-08-26",
+      "references": [
+        "https://github.com/nrwl/nx/security/advisories/GHSA-cxm3-wv7p-598c"
+      ]
+    },
+    {
+      "actorId": "s1ngularity-operators",
+      "campaign": "s1ngularity",
+      "kind": "package",
+      "value": "npm:nx@21.8.0",
+      "firstSeen": "2025-08-26",
+      "references": [
+        "https://github.com/nrwl/nx/security/advisories/GHSA-cxm3-wv7p-598c"
+      ]
+    },
+    {
+      "actorId": "s1ngularity-operators",
+      "campaign": "s1ngularity",
+      "kind": "package",
+      "value": "npm:nx@20.12.0",
+      "firstSeen": "2025-08-26",
+      "references": [
+        "https://github.com/nrwl/nx/security/advisories/GHSA-cxm3-wv7p-598c"
+      ]
+    },
+    {
+      "actorId": "s1ngularity-operators",
+      "campaign": "s1ngularity",
+      "kind": "package",
+      "value": "npm:@nx/devkit@21.5.0",
+      "firstSeen": "2025-08-26",
+      "references": [
+        "https://github.com/nrwl/nx/security/advisories/GHSA-cxm3-wv7p-598c"
+      ]
+    },
+    {
+      "actorId": "s1ngularity-operators",
+      "campaign": "s1ngularity",
+      "kind": "package",
+      "value": "npm:@nx/devkit@20.9.0",
+      "firstSeen": "2025-08-26",
+      "references": [
+        "https://github.com/nrwl/nx/security/advisories/GHSA-cxm3-wv7p-598c"
+      ]
+    },
+    {
+      "actorId": "s1ngularity-operators",
+      "campaign": "s1ngularity",
+      "kind": "package",
+      "value": "npm:@nx/js@21.5.0",
+      "firstSeen": "2025-08-26",
+      "references": [
+        "https://github.com/nrwl/nx/security/advisories/GHSA-cxm3-wv7p-598c"
+      ]
+    },
+    {
+      "actorId": "s1ngularity-operators",
+      "campaign": "s1ngularity",
+      "kind": "package",
+      "value": "npm:@nx/js@20.9.0",
+      "firstSeen": "2025-08-26",
+      "references": [
+        "https://github.com/nrwl/nx/security/advisories/GHSA-cxm3-wv7p-598c"
+      ]
+    },
+    {
+      "actorId": "s1ngularity-operators",
+      "campaign": "s1ngularity",
+      "kind": "package",
+      "value": "npm:@nx/node@21.5.0",
+      "firstSeen": "2025-08-26",
+      "references": [
+        "https://github.com/nrwl/nx/security/advisories/GHSA-cxm3-wv7p-598c"
+      ]
+    },
+    {
+      "actorId": "s1ngularity-operators",
+      "campaign": "s1ngularity",
+      "kind": "package",
+      "value": "npm:@nx/node@20.9.0",
+      "firstSeen": "2025-08-26",
+      "references": [
+        "https://github.com/nrwl/nx/security/advisories/GHSA-cxm3-wv7p-598c"
+      ]
+    },
+    {
+      "actorId": "s1ngularity-operators",
+      "campaign": "s1ngularity",
+      "kind": "package",
+      "value": "npm:@nx/workspace@21.5.0",
+      "firstSeen": "2025-08-26",
+      "references": [
+        "https://github.com/nrwl/nx/security/advisories/GHSA-cxm3-wv7p-598c"
+      ]
+    },
+    {
+      "actorId": "s1ngularity-operators",
+      "campaign": "s1ngularity",
+      "kind": "package",
+      "value": "npm:@nx/workspace@20.9.0",
+      "firstSeen": "2025-08-26",
+      "references": [
+        "https://github.com/nrwl/nx/security/advisories/GHSA-cxm3-wv7p-598c"
+      ]
+    },
+    {
+      "actorId": "s1ngularity-operators",
+      "campaign": "s1ngularity",
+      "kind": "package",
+      "value": "npm:@nx/eslint@21.5.0",
+      "firstSeen": "2025-08-26",
+      "references": [
+        "https://github.com/nrwl/nx/security/advisories/GHSA-cxm3-wv7p-598c"
+      ]
+    },
+    {
+      "actorId": "s1ngularity-operators",
+      "campaign": "s1ngularity",
+      "kind": "package",
+      "value": "npm:@nx/enterprise-cloud@3.2.0",
+      "firstSeen": "2025-08-26",
+      "references": [
+        "https://github.com/nrwl/nx/security/advisories/GHSA-cxm3-wv7p-598c"
+      ]
+    },
+    {
+      "actorId": "s1ngularity-operators",
+      "campaign": "s1ngularity",
+      "kind": "package",
+      "value": "npm:@nx/key@3.2.0",
+      "firstSeen": "2025-08-26",
+      "references": [
+        "https://github.com/nrwl/nx/security/advisories/GHSA-cxm3-wv7p-598c"
+      ]
+    },
+    {
+      "actorId": "s1ngularity-operators",
+      "campaign": "s1ngularity",
+      "kind": "string",
+      "value": "s1ngularity-repository",
+      "firstSeen": "2025-08-26",
+      "references": [
+        "https://github.com/nrwl/nx/security/advisories/GHSA-cxm3-wv7p-598c"
+      ]
+    },
+    {
+      "actorId": "ghostaction-operators",
+      "campaign": "GhostAction",
+      "kind": "domain",
+      "value": "bold-dhawan.45-139-104-115.plesk.page",
+      "firstSeen": "2025-09-02",
+      "references": [
+        "https://blog.gitguardian.com/ghostaction-campaign-3-325-secrets-stolen/"
+      ]
+    },
+    {
+      "actorId": "ghostaction-operators",
+      "campaign": "GhostAction",
+      "kind": "domain",
+      "value": "objective-hopper.45-139-104-115.plesk.page",
+      "firstSeen": "2025-09-02",
+      "references": [
+        "https://blog.gitguardian.com/ghostaction-campaign-3-325-secrets-stolen/"
+      ]
+    },
+    {
+      "actorId": "ghostaction-operators",
+      "campaign": "GhostAction",
+      "kind": "domain",
+      "value": "carte-avantage.com",
+      "firstSeen": "2025-09-02",
+      "references": [
+        "https://blog.gitguardian.com/ghostaction-campaign-3-325-secrets-stolen/"
+      ]
+    },
+    {
+      "actorId": "ghostaction-operators",
+      "campaign": "GhostAction",
+      "kind": "ip",
+      "value": "45.139.104.115",
+      "firstSeen": "2025-09-02",
+      "references": [
+        "https://blog.gitguardian.com/ghostaction-campaign-3-325-secrets-stolen/"
+      ]
+    },
+    {
+      "actorId": "ghostaction-operators",
+      "campaign": "GhostAction",
+      "kind": "file_name",
+      "value": ".github/workflows/github_actions_security.yml",
+      "firstSeen": "2025-09-02",
+      "references": [
+        "https://blog.gitguardian.com/ghostaction-campaign-3-325-secrets-stolen/"
+      ]
+    },
+    {
+      "actorId": "chalk-debug-operators",
+      "campaign": "chalk/debug compromise",
+      "kind": "domain",
+      "value": "npmjs.help",
+      "firstSeen": "2025-09-08",
+      "references": [
+        "https://www.aikido.dev/blog/npm-debug-and-chalk-packages-compromised"
+      ]
+    },
+    {
+      "actorId": "chalk-debug-operators",
+      "campaign": "chalk/debug compromise",
+      "kind": "wallet",
+      "value": "0xFc4a4858bafef54D1b1d7697bfb5c52F4c166976",
+      "firstSeen": "2025-09-08",
+      "references": [
+        "https://www.aikido.dev/blog/npm-debug-and-chalk-packages-compromised"
+      ]
+    },
+    {
+      "actorId": "chalk-debug-operators",
+      "campaign": "chalk/debug compromise",
+      "kind": "package",
+      "value": "npm:backslash@0.2.1",
+      "firstSeen": "2025-09-08",
+      "references": [
+        "https://www.aikido.dev/blog/npm-debug-and-chalk-packages-compromised"
+      ]
+    },
+    {
+      "actorId": "chalk-debug-operators",
+      "campaign": "chalk/debug compromise",
+      "kind": "package",
+      "value": "npm:chalk-template@1.1.1",
+      "firstSeen": "2025-09-08",
+      "references": [
+        "https://www.aikido.dev/blog/npm-debug-and-chalk-packages-compromised"
+      ]
+    },
+    {
+      "actorId": "chalk-debug-operators",
+      "campaign": "chalk/debug compromise",
+      "kind": "package",
+      "value": "npm:supports-hyperlinks@4.1.1",
+      "firstSeen": "2025-09-08",
+      "references": [
+        "https://www.aikido.dev/blog/npm-debug-and-chalk-packages-compromised"
+      ]
+    },
+    {
+      "actorId": "chalk-debug-operators",
+      "campaign": "chalk/debug compromise",
+      "kind": "package",
+      "value": "npm:has-ansi@6.0.1",
+      "firstSeen": "2025-09-08",
+      "references": [
+        "https://www.aikido.dev/blog/npm-debug-and-chalk-packages-compromised"
+      ]
+    },
+    {
+      "actorId": "chalk-debug-operators",
+      "campaign": "chalk/debug compromise",
+      "kind": "package",
+      "value": "npm:simple-swizzle@0.2.3",
+      "firstSeen": "2025-09-08",
+      "references": [
+        "https://www.aikido.dev/blog/npm-debug-and-chalk-packages-compromised"
+      ]
+    },
+    {
+      "actorId": "chalk-debug-operators",
+      "campaign": "chalk/debug compromise",
+      "kind": "package",
+      "value": "npm:color-string@2.1.1",
+      "firstSeen": "2025-09-08",
+      "references": [
+        "https://www.aikido.dev/blog/npm-debug-and-chalk-packages-compromised"
+      ]
+    },
+    {
+      "actorId": "chalk-debug-operators",
+      "campaign": "chalk/debug compromise",
+      "kind": "package",
+      "value": "npm:error-ex@1.3.3",
+      "firstSeen": "2025-09-08",
+      "references": [
+        "https://www.aikido.dev/blog/npm-debug-and-chalk-packages-compromised"
+      ]
+    },
+    {
+      "actorId": "chalk-debug-operators",
+      "campaign": "chalk/debug compromise",
+      "kind": "package",
+      "value": "npm:color-name@2.0.1",
+      "firstSeen": "2025-09-08",
+      "references": [
+        "https://www.aikido.dev/blog/npm-debug-and-chalk-packages-compromised"
+      ]
+    },
+    {
+      "actorId": "chalk-debug-operators",
+      "campaign": "chalk/debug compromise",
+      "kind": "package",
+      "value": "npm:is-arrayish@0.3.3",
+      "firstSeen": "2025-09-08",
+      "references": [
+        "https://www.aikido.dev/blog/npm-debug-and-chalk-packages-compromised"
+      ]
+    },
+    {
+      "actorId": "chalk-debug-operators",
+      "campaign": "chalk/debug compromise",
+      "kind": "package",
+      "value": "npm:slice-ansi@7.1.1",
+      "firstSeen": "2025-09-08",
+      "references": [
+        "https://www.aikido.dev/blog/npm-debug-and-chalk-packages-compromised"
+      ]
+    },
+    {
+      "actorId": "chalk-debug-operators",
+      "campaign": "chalk/debug compromise",
+      "kind": "package",
+      "value": "npm:color-convert@3.1.1",
+      "firstSeen": "2025-09-08",
+      "references": [
+        "https://www.aikido.dev/blog/npm-debug-and-chalk-packages-compromised"
+      ]
+    },
+    {
+      "actorId": "chalk-debug-operators",
+      "campaign": "chalk/debug compromise",
+      "kind": "package",
+      "value": "npm:wrap-ansi@9.0.1",
+      "firstSeen": "2025-09-08",
+      "references": [
+        "https://www.aikido.dev/blog/npm-debug-and-chalk-packages-compromised"
+      ]
+    },
+    {
+      "actorId": "chalk-debug-operators",
+      "campaign": "chalk/debug compromise",
+      "kind": "package",
+      "value": "npm:ansi-regex@6.2.1",
+      "firstSeen": "2025-09-08",
+      "references": [
+        "https://www.aikido.dev/blog/npm-debug-and-chalk-packages-compromised"
+      ]
+    },
+    {
+      "actorId": "chalk-debug-operators",
+      "campaign": "chalk/debug compromise",
+      "kind": "package",
+      "value": "npm:supports-color@10.2.1",
+      "firstSeen": "2025-09-08",
+      "references": [
+        "https://www.aikido.dev/blog/npm-debug-and-chalk-packages-compromised"
+      ]
+    },
+    {
+      "actorId": "chalk-debug-operators",
+      "campaign": "chalk/debug compromise",
+      "kind": "package",
+      "value": "npm:strip-ansi@7.1.1",
+      "firstSeen": "2025-09-08",
+      "references": [
+        "https://www.aikido.dev/blog/npm-debug-and-chalk-packages-compromised"
+      ]
+    },
+    {
+      "actorId": "chalk-debug-operators",
+      "campaign": "chalk/debug compromise",
+      "kind": "package",
+      "value": "npm:chalk@5.6.1",
+      "firstSeen": "2025-09-08",
+      "references": [
+        "https://www.aikido.dev/blog/npm-debug-and-chalk-packages-compromised"
+      ]
+    },
+    {
+      "actorId": "chalk-debug-operators",
+      "campaign": "chalk/debug compromise",
+      "kind": "package",
+      "value": "npm:debug@4.4.2",
+      "firstSeen": "2025-09-08",
+      "references": [
+        "https://www.aikido.dev/blog/npm-debug-and-chalk-packages-compromised"
+      ]
+    },
+    {
+      "actorId": "chalk-debug-operators",
+      "campaign": "chalk/debug compromise",
+      "kind": "package",
+      "value": "npm:ansi-styles@6.2.2",
+      "firstSeen": "2025-09-08",
+      "references": [
+        "https://www.aikido.dev/blog/npm-debug-and-chalk-packages-compromised"
+      ]
+    },
+    {
+      "actorId": "chalk-debug-operators",
+      "campaign": "chalk/debug compromise",
+      "kind": "package",
+      "value": "npm:proto-tinker-wc@0.1.87",
+      "firstSeen": "2025-09-08",
+      "references": [
+        "https://www.aikido.dev/blog/npm-debug-and-chalk-packages-compromised"
+      ]
+    },
+    {
+      "actorId": "ua-parser-js-hijack",
+      "campaign": "ua-parser-js hijack",
+      "kind": "package",
+      "value": "npm:ua-parser-js@0.7.29",
+      "firstSeen": null,
+      "references": [
+        "https://github.com/advisories/GHSA-pjwm-rvh2-c87w"
+      ]
+    },
+    {
+      "actorId": "ua-parser-js-hijack",
+      "campaign": "ua-parser-js hijack",
+      "kind": "package",
+      "value": "npm:ua-parser-js@0.8.0",
+      "firstSeen": null,
+      "references": [
+        "https://github.com/advisories/GHSA-pjwm-rvh2-c87w"
+      ]
+    },
+    {
+      "actorId": "ua-parser-js-hijack",
+      "campaign": "ua-parser-js hijack",
+      "kind": "package",
+      "value": "npm:ua-parser-js@1.0.0",
+      "firstSeen": null,
+      "references": [
+        "https://github.com/advisories/GHSA-pjwm-rvh2-c87w"
+      ]
+    },
+    {
+      "actorId": "contagious-interview",
+      "campaign": "Contagious Interview",
+      "kind": "package",
+      "value": "npm:passports-js@0.7.0",
+      "firstSeen": "2024-09-09",
+      "references": [
+        "https://securitylabs.datadoghq.com/articles/tenacious-pungsan-dprk-threat-actor-contagious-interview/"
+      ]
+    },
+    {
+      "actorId": "contagious-interview",
+      "campaign": "Contagious Interview",
+      "kind": "package",
+      "value": "npm:passports-js@0.7.1",
+      "firstSeen": "2024-09-10",
+      "references": [
+        "https://securitylabs.datadoghq.com/articles/tenacious-pungsan-dprk-threat-actor-contagious-interview/"
+      ]
+    },
+    {
+      "actorId": "contagious-interview",
+      "campaign": "Contagious Interview",
+      "kind": "package",
+      "value": "npm:bcrypts-js@2.4.4",
+      "firstSeen": "2024-09-11",
+      "references": [
+        "https://securitylabs.datadoghq.com/articles/tenacious-pungsan-dprk-threat-actor-contagious-interview/"
+      ]
+    },
+    {
+      "actorId": "contagious-interview",
+      "campaign": "Contagious Interview",
+      "kind": "package",
+      "value": "npm:blockscan-api@1.3.1",
+      "firstSeen": "2024-09-13",
+      "references": [
+        "https://securitylabs.datadoghq.com/articles/tenacious-pungsan-dprk-threat-actor-contagious-interview/"
+      ]
+    },
+    {
+      "actorId": "contagious-interview",
+      "campaign": "Contagious Interview",
+      "kind": "ip",
+      "value": "95.164.17.24",
+      "firstSeen": "2024-09-11",
+      "references": [
+        "https://securitylabs.datadoghq.com/articles/tenacious-pungsan-dprk-threat-actor-contagious-interview/"
+      ]
+    }
+  ]
+}

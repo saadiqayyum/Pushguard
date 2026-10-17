@@ -10,6 +10,9 @@ const C_BUILD = [
   "**/SConstruct",
   "**/configure",
   "**/configure.ac",
+  "**/*.m4",
+  "**/Makefile.am",
+  "**/Makefile.in",
   "**/*.gyp",
   "**/*.gypi",
 ]

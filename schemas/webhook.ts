@@ -58,6 +58,7 @@ export const installationReposPayloadSchema = z.object({
   repository_selection: z.string().optional(),
   repositories_added: z.array(repoRefSchema).default([]),
   repositories_removed: z.array(repoRefSchema).default([]),
+  sender: z.object({ login: z.string() }),
 });
 
 export type InstallationReposPayload = z.infer<
@@ -80,6 +81,7 @@ export type TeamPayload = z.infer<typeof teamPayloadSchema>;
 export const refPayloadSchema = z.object({
   ref: z.string(),
   ref_type: z.string(),
+  sender: z.object({ login: z.string() }).optional(),
   repository: z.object({
     full_name: z.string(),
     default_branch: z.string().optional(),
@@ -136,10 +138,11 @@ export const teamRepoPayloadSchema = z.object({
 export const organizationPayloadSchema = z.object({
   action: z.string(),
   organization: z.object({ login: z.string() }),
-  membership: z.object({ user: z.object({ login: z.string() }) }).optional(),
+  membership: z.object({ user: z.object({ login: z.string() }), role: z.string().optional() }).optional(),
   changes: z
     .object({ login: z.object({ from: z.string() }).optional() })
     .optional(),
+  sender: z.object({ login: z.string() }).optional(),
 });
 
 // Issue activity. Only alerts we filed are tracked; anything else is ignored.
@@ -180,6 +183,8 @@ export const pullRequestPayloadSchema = z.object({
     user: z.object({ login: z.string() }),
     head: z.object({ ref: z.string(), sha: z.string() }),
     base: z.object({ ref: z.string(), sha: z.string() }),
+    merged: z.boolean().default(false),
+    merge_commit_sha: z.string().max(64).nullish(),
   }),
   repository: z.object({
     full_name: z.string(),

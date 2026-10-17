@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { alertHeadline, collapseLines } from "@/lib/alert-display"
 import { SeverityBadge } from "@/components/severity-badge"
 import { pageMember } from "@/lib/auth"
-import { alertDetail } from "@/lib/db"
+import { alertDetail, withUser } from "@/lib/db"
 import { formatTimestamp } from "@/lib/format"
 
 export const dynamic = "force-dynamic"
@@ -19,7 +19,7 @@ export default async function AlertPage({ params }: { params: Promise<{ ref: str
   const number = Number(ref[2])
   if (ref.length !== 3 || !Number.isInteger(number)) notFound()
 
-  const alert = await alertDetail(login, `${ref[0]}/${ref[1]}`, number)
+  const alert = await withUser(login, () => alertDetail(login, `${ref[0]}/${ref[1]}`, number))
   if (!alert) notFound()
 
   const compare = alert.push
@@ -29,10 +29,10 @@ export default async function AlertPage({ params }: { params: Promise<{ ref: str
     : null
 
   return (
-    <div className="mx-auto w-full max-w-5xl px-4 sm:px-6 lg:px-8 space-y-5">
+    <div className="space-y-6">
       <div className="space-y-2">
         <Link
-          href="/dashboard"
+          href="/dashboard/alerts"
           className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
         >
           <ChevronLeft className="size-4" />
@@ -43,7 +43,7 @@ export default async function AlertPage({ params }: { params: Promise<{ ref: str
           <Badge variant={alert.state === "open" ? "default" : "outline"}>{alert.state}</Badge>
           <span className="text-xs text-muted-foreground">from a {alert.source.replace("_", " ")}</span>
           {(alert.occurrences ?? 1) > 1 && (
-            <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+            <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground tabular-nums">
               seen {alert.occurrences}× · last {formatTimestamp(alert.lastSeenAt)}
             </span>
           )}
@@ -142,7 +142,7 @@ export default async function AlertPage({ params }: { params: Promise<{ ref: str
         <CardContent className="space-y-5">
           {alert.findings.length === 0 && (
             <p className="text-sm text-muted-foreground">
-              {alert.ruleIds.join(", ")}. This alert predates the evidence being stored.
+              <span className="font-mono">{alert.ruleIds.join(", ")}</span>, no stored evidence
             </p>
           )}
           {alert.findings.map((finding, index) => (
@@ -204,7 +204,7 @@ export default async function AlertPage({ params }: { params: Promise<{ ref: str
         <CardContent className="space-y-4">
           {alert.comments.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              Nobody has replied. Comments made on the GitHub issue appear here.
+              No comments
             </p>
           ) : (
             alert.comments.map((comment) => (
@@ -221,7 +221,6 @@ export default async function AlertPage({ params }: { params: Promise<{ ref: str
             <a href={alert.url} target="_blank" rel="noreferrer" className="underline">
               Reply on GitHub
             </a>
-            . Replies appear here within a moment.
           </p>
         </CardContent>
       </Card>
@@ -233,12 +232,12 @@ export default async function AlertPage({ params }: { params: Promise<{ ref: str
         <CardContent className="space-y-3 text-sm">
           <dl className="space-y-2">
           <Row label="Assigned to">
-            {alert.assignees.length > 0 ? alert.assignees.join(", ") : "nobody"}
+            {alert.assignees.length > 0 ? alert.assignees.join(", ") : "Unassigned"}
           </Row>
           <Row label="First seen by">
             {alert.acknowledgedBy
               ? `${alert.acknowledgedBy}, ${formatTimestamp(alert.acknowledgedAt!)}`
-              : "nobody has opened this"}
+              : "Not opened"}
           </Row>
           </dl>
 
@@ -264,8 +263,8 @@ export default async function AlertPage({ params }: { params: Promise<{ ref: str
 // Label and value side by side.
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex flex-wrap gap-6">
-      <dt style={{ width: "9rem", flexShrink: 0 }} className="text-muted-foreground">
+    <div className="flex flex-col gap-0.5 sm:flex-row sm:gap-6">
+      <dt className="shrink-0 text-muted-foreground sm:w-36">
         {label}
       </dt>
       <dd className="min-w-0 flex-1">{children}</dd>

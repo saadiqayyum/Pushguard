@@ -1,28 +1,22 @@
-import { db, disabledPacksFor } from "@/lib/db"
-import { catalogById, catalogRules } from "@/lib/rules/catalog"
+import { disabledPacksFor, rulesFor } from "@/lib/db"
+import { catalogRules } from "@/lib/rules/catalog"
 import { logger } from "@/lib/logger"
+import { staffRules, type ShadowRule, type StaffRules } from "@/lib/platform/staff-rules"
 import { ruleSchema, type Rule } from "@/schemas/rule"
 
 export type ResolvedRule = Rule & {
   origin: "catalog" | "modified" | "custom"
 }
 
-// The rule set an account is actually evaluated against: the catalog, with
-// whatever they changed layered on top.
-export async function resolveRules(owner: string): Promise<ResolvedRule[]> {
-  const [docs, disabledPacks] = await Promise.all([
-    db.rules().find({ owner }).toArray(),
-    disabledPacksFor(owner),
-  ])
+// The rule set an account is actually evaluated against: the catalog, rules
+// staff published or changed, then whatever the account changed layered on top.
+export async function resolveRules(org: string, preloaded?: StaffRules): Promise<ResolvedRule[]> {
+  const [docs, disabledPacks, staff] = await Promise.all([rulesFor(org), disabledPacksFor(org), preloaded ?? staffRules(org)])
 
   const resolved = new Map<string, ResolvedRule>()
-  for (const rule of catalogRules) {
+  for (const rule of [...catalogRules.filter((r) => !staff.live.has(r.id)), ...staff.live.values()]) {
     const packOff = rule.pack !== undefined && disabledPacks.has(rule.pack)
-    resolved.set(rule.id, {
-      ...rule,
-      enabled: rule.enabled && !packOff,
-      origin: "catalog",
-    })
+    resolved.set(rule.id, { ...rule, enabled: rule.enabled && !packOff, origin: "catalog" })
   }
 
   for (const doc of docs) {
@@ -34,7 +28,7 @@ export async function resolveRules(owner: string): Promise<ResolvedRule[]> {
     resolved.set(doc.ruleId, {
       ...parsed.data,
       enabled: doc.enabled,
-      origin: catalogById.has(doc.ruleId) ? "modified" : "custom",
+      origin: resolved.has(doc.ruleId) ? "modified" : "custom",
     })
   }
 
@@ -42,8 +36,17 @@ export async function resolveRules(owner: string): Promise<ResolvedRule[]> {
 }
 
 // What the engine runs. Same resolution, minus everything switched off.
-export async function getActiveRules(owner: string): Promise<Rule[]> {
-  return (await resolveRules(owner)).filter((rule) => rule.enabled)
+export async function getActiveRules(org: string): Promise<Rule[]> {
+  return (await resolveRules(org)).filter((rule) => rule.enabled)
+}
+
+// A push also measures staff shadow versions, unless the account changed or
+// switched off that rule.
+export async function pushRules(org: string): Promise<{ active: Rule[]; shadow: ShadowRule[] }> {
+  const staff = await staffRules(org)
+  const resolved = await resolveRules(org, staff)
+  const own = new Set(resolved.filter((r) => r.origin !== "catalog" || !r.enabled).map((r) => r.id))
+  return { active: resolved.filter((r) => r.enabled), shadow: staff.shadow.filter((s) => !own.has(s.rule.id)) }
 }
 
 // The wire shape. `id` is the rule id, not a database id, because most rules.
@@ -58,29 +61,4 @@ export function serializeResolvedRule(rule: ResolvedRule) {
     enabled: rule.enabled,
     updatedAt: null as string | null,
   }
-}
-
-// Write an override for a catalog rule, or update one that already exists.
-export async function upsertOverride(input: {
-  owner: string
-  ruleId: string
-  body: Rule
-  enabled: boolean
-  by: string
-}): Promise<void> {
-  const now = new Date()
-  await db.rules().updateOne(
-    { owner: input.owner, ruleId: input.ruleId },
-    {
-      $set: { body: input.body, enabled: input.enabled, updatedAt: now },
-      $setOnInsert: { _id: crypto.randomUUID(), createdBy: input.by, createdAt: now },
-    },
-    { upsert: true },
-  )
-}
-
-// Drop an override so the catalog rule applies again.
-export async function clearOverride(owner: string, ruleId: string): Promise<boolean> {
-  const result = await db.rules().deleteOne({ owner, ruleId })
-  return result.deletedCount > 0
 }

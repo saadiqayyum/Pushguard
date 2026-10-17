@@ -5,8 +5,10 @@
 # it without anything being written to a database. This file documents the
 # format so you can write your own, and is what `npm run validate:rules` checks.
 #
-# Every field except id and severity is optional, but a rule needs at least one
-# condition: paths, all_of, when, added_lines, commit_message, unicode_risk.
+# A rule is when (conditions) plus then (an alert at its severity, and optional
+# responses). Every field except id and severity is optional, but a rule needs
+# at least one condition: paths, all_of, when, added_lines, commit_message,
+# unicode_risk, any_of, or advanced.
 #
 # AI rules are a separate kind and are not written here: they carry a prompt
 # rather than a pattern, and live in the dashboard. See AI_REVIEW.md, and
@@ -75,6 +77,55 @@
   # commit_message: '^Merge pull request #\d+'
   # unicode_risk: controls      # bidi overrides, invisible characters
   # unicode_risk: confusables   # the above plus homoglyphs
+
+# Pattern lists. added_lines and commit_message take one regex or a list; each
+# entry matches on its own (OR). Prefer a list over one long alternation.
+- id: example-pattern-list
+  description: Install hooks added in a commit that skips CI
+  severity: high
+  paths: ["**/package.json"]
+  added_lines:
+    - '"preinstall"\s*:'
+    - '"postinstall"\s*:'
+  commit_message: ['\bskip[- ]ci\b', '\[no ci\]']
+
+# any_of: several condition groups, any one of which fires the rule. Fields
+# inside a group AND together, exactly like top-level fields. Top-level
+# conditions, if any, count as one more group. At most 10 groups.
+- id: example-any-of
+  description: A workflow change or a force push, on main
+  severity: critical
+  branches: [main]          # scope (repos, branches, on) applies to every group
+  any_of:
+    - paths: [".github/workflows/**"]
+      change_type: [added, modified]
+    - when: { forced: true }
+
+# advanced: conditions the pattern fields cannot express, ANDed with them.
+# A tree of all / any / not over leaves: facts (behaviour the code index saw,
+# optionally across commits with `within`), path (an entry point reaching a
+# sink), indicator (a threat-intel hit), context (the same fields as `when`),
+# files, lines, and rule (another rule fired on this push). Pushes only: pull
+# requests and scans skip a rule that has advanced conditions.
+# responses: what happens besides the alert. investigate asks the AI
+# investigator to focus (a fixed focus id), detonate runs the push in the
+# sandbox (add the check phase and a published check by id), meta_alert alerts
+# outside GitHub, snapshot_tags records every tag's commit. Responses run on pushes.
+- id: example-advanced
+  description: Install hook added, then a secret sent out within 30 days
+  severity: critical
+  paths: ["**/package.json", "**/*.js"]
+  advanced:
+    within: { days: 30 }
+    when:
+      all:
+        - facts: { kinds: [install_hook] }
+        - facts: { kinds: [secret_read, network], same_file: true }
+        - not: { context: { forced: true } }
+  responses:
+    - investigate: { focus: install-hook-exfil }
+    - detonate: { phases: [install, execute] }
+    - meta_alert: true
 
 # enabled: false ships a rule switched off. Useful for one that is right for
 # some teams and noise for others.

@@ -1,49 +1,5 @@
-import Image from "next/image"
-import Link from "next/link"
-import { LayoutGrid } from "lucide-react"
-import { auth } from "@/lib/auth"
-import { NavLinks } from "@/components/nav-item"
-
-const NAV = [{ href: "/how-to-use", label: "How to use" }]
-
-export type NavLink = { href: string; label: string }
-
-// The one top bar, used by the marketing pages and the dashboard.
-export function TopNav({ links, children }: { links: NavLink[]; children?: React.ReactNode }) {
-  return (
-    <header className="sticky top-0 z-30 border-b border-[var(--rule)] bg-[var(--paper)]/80 backdrop-blur-md">
-      <div className="mx-auto w-full max-w-5xl px-4 sm:px-6 lg:px-8 flex h-16 items-center gap-4">
-        <Link href="/" className="flex shrink-0 items-center gap-2.5">
-          <Image src="/logo.svg" alt="" width={24} height={24} />
-          <span className="mono text-[0.95rem] font-semibold tracking-tight">Pushguard</span>
-        </Link>
-
-        <div className="ml-auto flex min-w-0 items-center gap-2 sm:gap-4">
-          <NavLinks links={links} />
-          {children}
-        </div>
-      </div>
-    </header>
-  )
-}
-
-// One action in the bar. Installing is the page's own call to action, and a
-// second GitHub button beside Sign in only asked which one a visitor wanted.
-export async function SiteHeader() {
-  const signedIn = Boolean((await auth())?.user)
-
-  return (
-    <TopNav links={NAV}>
-      <Link
-        href={signedIn ? "/dashboard" : "/signin"}
-        className="flex h-9 items-center gap-2 rounded-lg bg-[var(--brand)] px-4 text-sm font-medium text-[var(--paper)] transition-opacity hover:opacity-90"
-      >
-        {signedIn ? <LayoutGrid className="size-4" /> : <GitHubMark className="size-4" />}
-        {signedIn ? "Dashboard" : "Sign in"}
-      </Link>
-    </TopNav>
-  )
-}
+export const CTA =
+  "inline-flex h-11 items-center gap-2.5 rounded-lg bg-primary px-5 text-[0.9375rem] font-medium text-primary-foreground transition-opacity hover:opacity-90"
 
 // GitHub's mark. On a button whose destination is GitHub, this is the affordance.
 export function GitHubMark({ className }: { className?: string }) {
@@ -64,15 +20,15 @@ export function InstallButton({
 }) {
   if (!href) {
     return (
-      <p className="text-sm text-[var(--ink-soft)]">
-        Ask the operator for the installation link, NEXT_PUBLIC_GITHUB_APP_SLUG is not set.
+      <p className="text-sm text-muted-foreground">
+        Install link not configured (NEXT_PUBLIC_GITHUB_APP_SLUG).
       </p>
     )
   }
   return (
     <a
       href={href}
-      className="flex h-12 items-center gap-2.5 rounded-xl bg-[var(--brand)] px-6 font-sans text-[0.9375rem] font-medium text-[var(--paper)] transition-opacity hover:opacity-90"
+      className={CTA}
     >
       <GitHubMark className="size-[1.125rem]" />
       {children}
@@ -80,40 +36,3 @@ export function InstallButton({
   )
 }
 
-// The quieter action that sits next to it.
-export function SecondaryLink({ href, children }: { href: string; children: React.ReactNode }) {
-  return (
-    <Link
-      href={href}
-      className="flex h-12 items-center rounded-xl px-5 font-sans text-[0.9375rem] font-medium text-[var(--ink-soft)] transition-colors hover:bg-[var(--paper-sunk)] hover:text-[var(--ink)]"
-    >
-      {children}
-    </Link>
-  )
-}
-
-export function SiteFooter() {
-  return (
-    <footer className="mt-24 border-t border-[var(--rule)]">
-      <div className="mx-auto w-full max-w-5xl px-4 sm:px-6 lg:px-8 flex flex-col gap-4 py-10 text-sm text-[var(--ink-soft)] sm:flex-row sm:items-center sm:justify-between">
-        <p className="mono text-xs">Pushguard, detection for the push you did not expect.</p>
-        <nav className="flex flex-wrap items-center gap-5">
-          {NAV.map((item) => (
-            <Link key={item.href} href={item.href} className="transition-colors hover:text-[var(--ink)]">
-              {item.label}
-            </Link>
-          ))}
-          <a
-            href="https://github.com/saadiqayyum/pushguard"
-            className="transition-colors hover:text-[var(--ink)]"
-            target="_blank"
-            rel="noreferrer"
-          >
-            Source
-          </a>
-          <span className="mono text-xs">MIT</span>
-        </nav>
-      </div>
-    </footer>
-  )
-}

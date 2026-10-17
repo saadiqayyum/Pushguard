@@ -1,6 +1,11 @@
 import { chatModel, TRIAGE_MODEL } from "@/lib/chat-model"
+import { HumanMessage, SystemMessage, type AIMessage } from "@langchain/core/messages"
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph"
 import { z } from "zod"
+import { BudgetExhausted } from "@/lib/ai-budget"
+import { meteredInvoke, type Spend } from "@/lib/ai-call"
+import { STRUCTURED } from "@/lib/agent-loop"
+import { fence } from "@/lib/fence"
 import { logger } from "@/lib/logger"
 import type { AiCredentials } from "@/lib/ai"
 
@@ -8,6 +13,8 @@ import type { AiCredentials } from "@/lib/ai"
 
 // The whole review, both stages, has to finish inside this.
 const REVIEW_TIMEOUT_MS = 35_000
+
+const TRIAGE_MAX_TOKENS = 1024
 
 // Below this, triage cannot pay for itself: the second round trip costs more
 // wall clock than the tokens it saves, and the whole review has one function
@@ -52,76 +59,93 @@ export const GROUND_RULES = [
 ].join(" ")
 
 // A summary is written by a model that just read attacker-controlled input and
-// lands verbatim in a GitHub issue.
+// lands in a GitHub issue: no mentions, no links, no images.
 export function sanitizeSummary(summary: string): string {
-  return summary.replaceAll(/\s+/g, " ").replaceAll("@", "@\u200b").trim().slice(0, 600)
-}
-
-// Nothing in a file may close the tag that contains it.
-function wrap(path: string, source: string): string {
-  return `<file path="${path.replaceAll('"', "'")}">\n${source.replaceAll(/<\/?file[^>]*>/gi, "[file-tag]")}\n</file>`
+  return summary
+    .replaceAll(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replaceAll("://", "[:]//")
+    .replaceAll(/\s+/g, " ")
+    .replaceAll("@", "@\u200b")
+    .trim()
+    .slice(0, 600)
 }
 
 function render(files: Record<string, string>, only?: string[]): string {
   return Object.entries(files)
     .filter(([path]) => !only || only.includes(path))
-    .map(([path, source]) => wrap(path, source))
+    .map(([path, source]) => fence("file", { path }, source))
     .join("\n\n")
 }
 
-// Structured output as a response format, never as a forced tool call.
-const STRUCTURED = { method: "jsonSchema" } as const
-
-export async function buildReviewGraph(credentials: AiCredentials) {
+export async function buildReviewGraph(credentials: AiCredentials, spend: Spend) {
   const triageModel = chatModel(
     credentials.provider,
     credentials.baseUrl ? credentials.model : TRIAGE_MODEL[credentials.provider],
-    { maxTokens: 1024, maxRetries: MAX_RETRIES, baseUrl: credentials.baseUrl },
+    { maxTokens: TRIAGE_MAX_TOKENS, maxRetries: MAX_RETRIES, baseUrl: credentials.baseUrl },
     credentials.apiKey,
   ).withStructuredOutput(triageSchema, { name: "triage", ...STRUCTURED })
 
   const deepModel = chatModel(
     credentials.provider,
     credentials.model,
-    { maxTokens: 8000, maxRetries: MAX_RETRIES, effort: credentials.effort, baseUrl: credentials.baseUrl },
+    {
+      maxTokens: credentials.maxOutputTokens,
+      maxRetries: MAX_RETRIES,
+      effort: credentials.effort,
+      thinkingBudget: credentials.thinkingBudget,
+      baseUrl: credentials.baseUrl,
+    },
     credentials.apiKey,
   ).withStructuredOutput(deepSchema, { name: "report_findings", ...STRUCTURED })
 
+  const ask = <T>(
+    model: { invoke: (m: (SystemMessage | HumanMessage)[], o: { signal: AbortSignal }) => Promise<{ raw: unknown; parsed: T }> },
+    maxOutput: number,
+    system: string,
+    user: string,
+    deadline?: AbortSignal,
+  ) => {
+    const messages = [new SystemMessage(system), new HumanMessage(user)]
+    return meteredInvoke(
+      { ...spend, maxOutput },
+      messages,
+      async (signal) => {
+        const { raw, parsed } = await model.invoke(messages, { signal })
+        return { raw: raw as AIMessage, value: parsed }
+      },
+      deadline,
+    )
+  }
+
   return new StateGraph(ReviewState)
     .addNode("triage", async (state, config) => {
-      const result = await triageModel.invoke([
-        {
-          role: "system",
-          content: `You are triaging source files from a git push. ${GROUND_RULES} ${state.prompt ? `The question that will be asked of them is: ${state.prompt}` : ""} Name only the files that warrant a closer, more expensive read. Most pushes contain nothing; returning an empty list is the correct and common answer.`,
-        },
-        {
-          role: "user",
-          content: [
-            state.alsoChanged.length > 0
-              ? `The same push also changed, but you are not shown: ${state.alsoChanged.join(", ")}`
-              : "",
-            render(state.files),
-          ].join("\n\n"),
-        },
-      ], config)
+      const result = await ask(
+        triageModel,
+        TRIAGE_MAX_TOKENS,
+        `You are triaging source files from a git push. ${GROUND_RULES} ${state.prompt ? `The question that will be asked of them is: ${state.prompt}` : ""} Name only the files that warrant a closer, more expensive read. Most pushes contain nothing; returning an empty list is the correct and common answer.`,
+        [
+          state.alsoChanged.length > 0
+            ? `The same push also changed, but you are not shown: ${state.alsoChanged.join(", ")}`
+            : "",
+          render(state.files),
+        ].join("\n\n"),
+        config.signal,
+      )
       return { suspicious: result.suspicious.filter((path) => path in state.files) }
     })
     .addNode("deep", async (state, config) => {
-      const result = await deepModel.invoke([
-        {
-          role: "system",
-          content: `You are a security analyst. ${GROUND_RULES} ${state.prompt ? `Answer this specifically: ${state.prompt}` : "Report any file that is malicious."} Consider the files together: an attack is often split so that no single file looks wrong. Your verdict is advisory and may only add risk, never clear a push.`,
-        },
-        {
-          role: "user",
-          content: [
-            state.alsoChanged.length > 0
-              ? `The same push also changed, but you are not shown: ${state.alsoChanged.join(", ")}`
-              : "",
-            render(state.files, state.suspicious.length > 0 ? state.suspicious : undefined),
-          ].join("\n\n"),
-        },
-      ], config)
+      const result = await ask(
+        deepModel,
+        credentials.maxOutputTokens,
+        `You are a security analyst. ${GROUND_RULES} ${state.prompt ? `Answer this specifically: ${state.prompt}` : "Report any file that is malicious."} Consider the files together: an attack is often split so that no single file looks wrong. Your verdict is advisory and may only add risk, never clear a push.`,
+        [
+          state.alsoChanged.length > 0
+            ? `The same push also changed, but you are not shown: ${state.alsoChanged.join(", ")}`
+            : "",
+          render(state.files, state.suspicious.length > 0 ? state.suspicious : undefined),
+        ].join("\n\n"),
+        config.signal,
+      )
       return {
         findings: result.findings
           .filter((f) => f.path in state.files)
@@ -149,24 +173,28 @@ export async function buildReviewGraph(credentials: AiCredentials) {
     .compile()
 }
 
-// Run the graph. Never throws: this executes after the webhook has already.
+// Run the graph. Never throws: it runs inside a queued job, and a review that
+// could not answer is reported as a finding by the caller.
 // A 401/403 from any of the three providers. Their wordings differ; the status
 // does not.
 export function isAuthFailure(message: string): boolean {
   return /\b(401|403)\b/.test(message) || /authentication|invalid[ _-]?api[ _-]?key|credentials/i.test(message)
 }
 
+export type ReviewOutcome = { verdicts: Verdict[] } | { failed: true } | { exhausted: BudgetExhausted }
+
 export async function runReview(
   credentials: AiCredentials,
+  spend: Spend,
   files: Record<string, string>,
   alsoChanged: string[],
   prompt?: string,
   deadline?: AbortSignal,
-): Promise<Verdict[] | null> {
+): Promise<ReviewOutcome> {
   const own = AbortSignal.timeout(REVIEW_TIMEOUT_MS)
   const signal = deadline ? AbortSignal.any([deadline, own]) : own
   try {
-    const graph = await buildReviewGraph(credentials)
+    const graph = await buildReviewGraph(credentials, spend)
     const result = await graph.invoke({ files, alsoChanged, prompt: prompt ?? "" }, { signal })
     logger.info("review_graph_done", {
       files: Object.keys(files).length,
@@ -177,9 +205,15 @@ export async function runReview(
       findings: result.findings.length,
       provider: credentials.provider,
       key: credentials.label,
+      inputTokens: spend.meter.usage.input,
+      outputTokens: spend.meter.usage.output,
     })
-    return result.findings
+    return { verdicts: result.findings }
   } catch (error) {
+    if (error instanceof BudgetExhausted) {
+      logger.warn("review_graph_budget_exhausted", { scope: error.scope, needed: error.needed, key: credentials.label })
+      return { exhausted: error }
+    }
     const message = error instanceof Error ? error.message : String(error)
     logger.warn("review_graph_failed", {
       provider: credentials.provider,
@@ -190,6 +224,6 @@ export async function runReview(
       reason: isAuthFailure(message) ? "credentials_rejected" : "call_failed",
       error: message,
     })
-    return null
+    return { failed: true }
   }
 }

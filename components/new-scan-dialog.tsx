@@ -11,22 +11,24 @@ export function NewScanDialog({
   installUrl,
   note,
   aiKeys = [],
+  disabled = false,
 }: {
   installUrl: string | null
   note: string
   aiKeys?: { id: string; label: string; model: string }[]
+  disabled?: boolean
 }) {
   const [open, setOpen] = useState(false)
 
   return (
     <>
-      <Button size="sm" onClick={() => setOpen(true)}>
+      <Button size="sm" disabled={disabled} onClick={() => setOpen(true)}>
         <Plus className="size-4" />
         New scan
       </Button>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-h-[85vh] w-[calc(100%-2rem)] max-w-2xl gap-6 overflow-y-auto p-6 sm:max-w-2xl">
+        <DialogContent className="max-h-[85dvh] w-[calc(100%-2rem)] max-w-2xl gap-6 overflow-y-auto p-6 sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>New scan</DialogTitle>
           </DialogHeader>

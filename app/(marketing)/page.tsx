@@ -1,109 +1,104 @@
-import Link from "next/link";
-import { ArrowRight } from "lucide-react";
-import { InstallButton, SecondaryLink } from "@/components/site-chrome";
-import { auth } from "@/lib/auth";
-import { installUrl } from "@/lib/install-url";
+import type { Metadata } from "next"
+import Link from "next/link"
+import { BookOpen } from "lucide-react"
+import { CONTAINER } from "@/components/app-header"
+import { AiReview } from "@/components/marketing/ai-review"
+import { Backdrop } from "@/components/marketing/backdrop"
+import { DriftIcons } from "@/components/marketing/drift-icons"
+import { CategoryIcon } from "@/components/marketing/category-icon"
+import { Ledger } from "@/components/marketing/ledger"
+import { Record } from "@/components/marketing/record"
+import { StartCta } from "@/components/marketing/start-cta"
+import { SurfaceMap } from "@/components/marketing/surface-map"
+import { marketingStats } from "@/lib/marketing/stats"
 
-export const dynamic = "force-dynamic";
+export const metadata: Metadata = { alternates: { canonical: "/" } }
 
-// The tone is the colour a finding is reported in, not a decoration: red is
-// flagged, green is allowed-but-watched, violet is a model's verdict.
-const SIGNALS: [string, string][] = [
-  ["Install hooks", "flag"],
-  ["Workflow edits", "flag"],
-  ["Committed secrets", "flag"],
-  ["Force pushes", "add"],
-  ["Model review", "ai"],
-];
+// Editorial picks from docs/attacks; everything shown about each is read from its write-up.
+const RECORD = [
+  "packages/event-stream",
+  "multi-stage/xz-utils",
+  "ci-cd/tag-repointing-tj-actions",
+  "packages/shai-hulud-1",
+  "ci-cd/ghostaction",
+  "hidden-code/invisible-unicode-glassworm",
+  "packages/axios-2026",
+  "packages/chaindrop-keyv-2026",
+  "packages/zod-standard-schema-nub-2026",
+]
 
-const AI = [
-  [
-    "Rules written in English",
-    "Describe what you do not want in a sentence. A model reads the changed files and answers it, so a rule can catch what no regex was written for: exfiltration, a logic bomb, a check quietly bypassed.",
-  ],
-  [
-    "The model never holds a token",
-    "It gets tools, not credentials. It names a path, our code decides whether it gets one. A request outside the rule's scope is refused and filed as a finding, which is where prompt injection surfaces.",
-  ],
-  [
-    "Your key, your model",
-    "Anthropic, OpenAI or Google, encrypted at rest, decrypted at call time. A model that timed out or ran out of context is reported, never counted as a clean result.",
-  ],
-];
+const SECONDARY =
+  "inline-flex h-11 items-center gap-2 rounded-lg border bg-card/80 px-5 text-[0.9375rem] font-medium transition-colors hover:bg-accent"
 
-export default async function LandingPage() {
-  const signedIn = Boolean((await auth())?.user);
-  const install = installUrl();
+export default function LandingPage() {
+  const stats = marketingStats()
+  const record = RECORD.flatMap((path) => stats.attacks.filter((a) => `${a.category}/${a.slug}` === path))
+
+  const cta = <StartCta />
 
   return (
     <>
-      <section className="mx-auto w-full max-w-5xl px-4 sm:px-6 lg:px-8 pt-16 pb-14 sm:pt-24">
-        <h1 className="mt-5 max-w-3xl text-balance">
-          Find the commit
-          <br />
-          nobody reviewed.
-        </h1>
+      <Backdrop />
+      <DriftIcons />
 
-        <p className="mt-6 max-w-xl text-[1.0625rem] leading-relaxed text-[var(--ink-soft)]">
-          Pushguard watches every push to your organization and opens a ticket
-          when something looks wrong. Pattern rules run free on every push; AI
-          rules read the diff and judge it. Scan on demand to see what is
-          already in your code. Nothing reaches GitHub until you decide to file
-          it.
-        </p>
-
-        <div className="mt-7 flex flex-wrap gap-2">
-          {SIGNALS.map(([label, tone]) => (
-            <span key={label} className="chip" data-tone={tone}>
-              {label}
-            </span>
-          ))}
-        </div>
-
-        <div className="mt-10 flex flex-wrap items-center gap-3">
-          {signedIn ? (
-            <Link
-              href="/dashboard/scans"
-              className="group flex h-12 items-center gap-2.5 rounded-xl bg-[var(--brand)] pl-6 pr-5 font-sans text-[0.9375rem] font-medium text-[var(--paper)] transition-opacity hover:opacity-90"
-            >
-              Scan your repositories
-              <ArrowRight className="size-4 transition-transform group-hover:translate-x-0.5" />
+      <section className={`${CONTAINER} grid gap-10 pt-12 pb-16 sm:pt-16 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] lg:gap-16 lg:pt-24`}>
+        <div className="min-w-0">
+          <h1>Attacks now arrive as commits.</h1>
+          <p className="mt-6 max-w-md text-[1.125rem] leading-relaxed text-muted-foreground">
+            Pushguard reads every push across your GitHub organization and files an issue when a change matches a
+            known attack.
+          </p>
+          <div className="mt-8 flex flex-wrap items-center gap-3">
+            {cta}
+            <Link href="/research" className={SECONDARY}>
+              <BookOpen aria-hidden className="size-[1.125rem]" strokeWidth={1.75} />
+              Read the research
             </Link>
-          ) : (
-            <InstallButton href={install}>Connect GitHub</InstallButton>
-          )}
-
-          <SecondaryLink href="/how-to-use">See how it works</SecondaryLink>
+          </div>
         </div>
+        <Ledger stats={stats} />
       </section>
 
-      <section className="mx-auto w-full max-w-5xl px-4 sm:px-6 lg:px-8 pb-4">
-        <p className="eyebrow">AI review</p>
-        <h2 className="mt-4 max-w-2xl text-balance">
-          A rule you write as a sentence.
-        </h2>
+      <section aria-labelledby="ai" className={`${CONTAINER} pb-12`}>
+        <AiReview />
+      </section>
 
-        <ul className="mt-8 max-w-3xl">
-          {AI.map(([title, body]) => (
-            <li key={title} className="gutter-row">
-              <span className="gutter-mark" data-mark="~" aria-hidden>
-                ~
-              </span>
-              <div className="min-w-0">
-                <h3>{title}</h3>
-                <p className="mt-1 text-sm leading-relaxed text-[var(--ink-soft)]">
-                  {body}
-                </p>
-              </div>
-            </li>
-          ))}
-          <div className="max-w-3xl border-t border-[var(--rule)]" />
-        </ul>
+      <section aria-labelledby="record" className={`${CONTAINER} grid gap-8 py-12 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] lg:gap-16`}>
+        <div className="min-w-0 lg:sticky lg:top-24 lg:self-start">
+          <h2 id="record">The change that gave each one away</h2>
+          <p className="mt-4 max-w-sm text-muted-foreground">
+            {record.length} incidents from the library, each with the change that gave it away.
+          </p>
+          <ul className="mt-6 flex flex-col gap-2 text-sm" aria-label="Categories">
+            {stats.byCategory.map((category) => (
+              <li key={category.id} data-cat={category.id} className="flex items-center gap-2.5">
+                <CategoryIcon category={category.id} size="sm" />
+                <Link href={`/research?category=${category.id}`} className="underline-offset-4 hover:underline">
+                  {category.title}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </div>
+        <Record attacks={record} />
+      </section>
 
-        <p className="mt-6 text-sm text-[var(--ink-soft)]">
-          AI can annotate or escalate a finding. It can never suppress one.
+      <section aria-labelledby="surfaces" className={`${CONTAINER} py-12`}>
+        <h2 id="surfaces" className="max-w-2xl">Every place a change can make code run</h2>
+        <p className="mt-4 mb-8 max-w-2xl text-muted-foreground">
+          {stats.surfaceCount} places, grouped by when the code runs.
         </p>
+        <SurfaceMap families={stats.surfaces} />
+      </section>
+
+      <section aria-labelledby="start" className={`${CONTAINER} pt-12`}>
+        <div className="flex flex-col items-start gap-6 sm:flex-row sm:items-center sm:justify-between">
+          <h2 id="start" className="max-w-md">
+            Start with one repository.
+          </h2>
+          {cta}
+        </div>
       </section>
     </>
-  );
+  )
 }

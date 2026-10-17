@@ -1,22 +1,48 @@
-import { defineCollection, rawDb } from "./client"
-import { MAX_RENAME_ROWS } from "./limits"
+import { and, eq, inArray, isNotNull, like, sql } from "drizzle-orm"
+import { boolean, index, integer, pgPolicy, primaryKey, text, timestamp } from "drizzle-orm/pg-core"
+import { app, appRole, q, systemAccess } from "./client"
+import { repoAccess } from "./access"
+import { alerts } from "./alerts"
+import { dependencyInventory } from "./dependency-inventory"
+import { pullRequests } from "./pull-requests"
+import { reviewSessions } from "./review-sessions"
+import { tagSnapshots } from "./tag-snapshots"
 
-export type RepoDoc = {
-  _id: string
-  org: string
-  defaultBranch: string
-  branches: string[]
-  branchesTruncated: boolean
-  archived: boolean
-  private?: boolean
-  syncedAt?: Date
-  updatedAt: Date
+export const repos = app
+  .table(
+    "repos",
+    {
+      fullName: text().primaryKey(),
+      org: text().notNull(),
+      defaultBranch: text().notNull().default("main"),
+      branches: text().array().notNull().default(sql`'{}'`),
+      branchesTruncated: boolean().notNull().default(false),
+      archived: boolean().notNull().default(false),
+      private: boolean(),
+      syncedAt: timestamp({ withTimezone: true }),
+      updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    },
+    (t) => [systemAccess("repos"), 
+      index().on(t.org),
+      pgPolicy("repos_readable", { for: "select", to: appRole, using: sql`authz.can_read(full_name)` }),
+    ],
+  )
+  .enableRLS()
+
+export type RepoDoc = typeof repos.$inferSelect
+
+export async function repoRecord(fullName: string): Promise<RepoDoc | null> {
+  const rows = await q((tx) => tx.select().from(repos).where(eq(repos.fullName, fullName)).limit(1))
+  return rows[0] ?? null
 }
 
-export const repos = defineCollection<RepoDoc>("repos", [{ keys: { org: 1 } }])
-
-export function repoRecord(fullName: string): Promise<RepoDoc | null> {
-  return repos().findOne({ _id: fullName })
+export async function saveRepo(fullName: string, fields: Omit<typeof repos.$inferInsert, "fullName" | "org">) {
+  await q((tx) =>
+    tx
+      .insert(repos)
+      .values({ fullName, org: fullName.split("/")[0], ...fields })
+      .onConflictDoUpdate({ target: repos.fullName, set: { ...fields, updatedAt: new Date() } }),
+  )
 }
 
 // Merges webhook facts. Never creates a branch list; only a full sync does.
@@ -29,121 +55,107 @@ export async function noteRepo(
 ): Promise<void> {
   const { addBranch, removeBranch, ...fields } = patch
   const set = Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined))
+  await q(async (tx) => {
+    await tx
+      .insert(repos)
+      .values({ fullName, org: fullName.split("/")[0], ...set })
+      .onConflictDoUpdate({ target: repos.fullName, set: { ...set, updatedAt: new Date() } })
+    if (removeBranch) {
+      await tx
+        .update(repos)
+        .set({ branches: sql`array_remove(${repos.branches}, ${removeBranch})` })
+        .where(eq(repos.fullName, fullName))
+    }
+    if (addBranch) {
+      await tx
+        .update(repos)
+        .set({ branches: sql`array_append(${repos.branches}, ${addBranch})` })
+        .where(
+          and(
+            eq(repos.fullName, fullName),
+            isNotNull(repos.syncedAt),
+            sql`not (${addBranch} = any(${repos.branches}))`,
+          ),
+        )
+    }
+  })
+}
 
-  await repos().updateOne(
-    { _id: fullName },
+export const pushActors = app
+  .table(
+    "push_actors",
     {
-      $set: { ...set, updatedAt: new Date() },
-      $setOnInsert: { org: fullName.split("/")[0], branches: [], branchesTruncated: false },
-      ...(removeBranch ? { $pull: { branches: removeBranch } } : {}),
+      repo: text().notNull(),
+      sender: text().notNull(),
+      firstSeenAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+      pushes: integer().notNull().default(1),
     },
-    { upsert: true },
+    (t) => [systemAccess("push_actors"), primaryKey({ columns: [t.repo, t.sender] })],
   )
-
-  if (addBranch) {
-    await repos().updateOne(
-      { _id: fullName, syncedAt: { $exists: true } },
-      { $addToSet: { branches: addBranch } },
-    )
-  }
-}
-
-export type PushActorDoc = {
-  _id: string
-  repo: string
-  sender: string
-  firstSeenAt: Date
-  pushes: number
-}
-
-export const pushActors = defineCollection<PushActorDoc>("push_actors", [
-  { keys: { repo: 1, firstSeenAt: -1 } },
-])
+  .enableRLS()
 
 // True only for the inserting caller, so two racing pushes cannot both be first.
 export async function recordPushActor(repo: string, sender: string): Promise<boolean> {
-  const result = await pushActors().updateOne(
-    { _id: `${repo}\0${sender}` },
-    { $setOnInsert: { repo, sender, firstSeenAt: new Date() }, $inc: { pushes: 1 } },
-    { upsert: true },
+  const rows = await q((tx) =>
+    tx
+      .insert(pushActors)
+      .values({ repo, sender })
+      .onConflictDoUpdate({
+        target: [pushActors.repo, pushActors.sender],
+        set: { pushes: sql`${pushActors.pushes} + 1` },
+      })
+      .returning({ inserted: sql<boolean>`xmax = 0` }),
   )
-  return result.upsertedCount === 1
-}
-
-type RepoKeyed = { _id: string; repo: string; [field: string]: unknown }
-
-// `_id` is immutable, so rows keyed by the repository name are re-inserted under
-// the new key rather than updated. Capped: a rename does not license an
-// unbounded rewrite.
-async function rekeyByRepo(
-  name: string,
-  from: string,
-  to: string,
-  key: (doc: RepoKeyed) => string,
-): Promise<number> {
-  const collection = rawDb().collection<RepoKeyed>(name)
-  const docs = await collection.find({ repo: from }).limit(MAX_RENAME_ROWS).toArray()
-  if (docs.length === 0) return 0
-
-  await collection.bulkWrite(
-    docs.map(({ _id, ...rest }) => ({
-      replaceOne: {
-        filter: { _id: key({ _id, ...rest }) },
-        replacement: { ...rest, repo: to },
-        upsert: true,
-      },
-    })),
-    { ordered: false },
-  )
-  await collection.deleteMany({ _id: { $in: docs.map((doc) => doc._id) } })
-  return docs.length
+  return rows[0]?.inserted ?? false
 }
 
 // A repository's full name is its key in every projection, so a rename that
-// moves only the repos row makes the repository look new: first-push fires
-// again, alerts stop deduping, and members lose read access to their history.
+// moves only the repos row makes the repository look new.
 export async function renameRepoProjections(from: string, to: string): Promise<void> {
   if (from === to) return
-
-  const existing = await repos().findOne({ _id: from })
-  if (existing) {
-    const { _id, ...rest } = existing
-    await repos().deleteOne({ _id })
-    await repos().replaceOne({ _id: to }, { ...rest, updatedAt: new Date() }, { upsert: true })
-  }
-
-  await rekeyByRepo("push_actors", from, to, (doc) => `${to}\0${doc.sender as string}`)
-  await rekeyByRepo(
-    "repo_access",
-    from,
-    to,
-    (doc) => `${(doc.login as string).toLowerCase()}\0${to.toLowerCase()}`,
-  )
-  await rekeyByRepo("alerts", from, to, (doc) => `${to}#${doc.number as number}`)
-  await rekeyByRepo("pull_requests", from, to, (doc) => `${to}#${doc.number as number}`)
-  await rawDb().collection("review_sessions").updateMany({ repo: from }, { $set: { repo: to } })
+  await q(async (tx) => {
+    await tx.update(repos).set({ fullName: to, updatedAt: new Date() }).where(eq(repos.fullName, from))
+    await tx.update(pushActors).set({ repo: to }).where(eq(pushActors.repo, from))
+    await tx.update(repoAccess).set({ repo: to }).where(eq(repoAccess.repo, from))
+    await tx.update(alerts).set({ repo: to }).where(eq(alerts.repo, from))
+    await tx.update(pullRequests).set({ repo: to }).where(eq(pullRequests.repo, from))
+    await tx.update(reviewSessions).set({ repo: to }).where(eq(reviewSessions.repo, from))
+    await tx.update(dependencyInventory).set({ repo: to }).where(eq(dependencyInventory.repo, from))
+    await tx.update(tagSnapshots).set({ repo: to }).where(eq(tagSnapshots.repo, from))
+  })
 }
 
-// Drop what is derived from GitHub. Scans, rules and filed alerts are the
-// account's own history and survive.
+// Drop what is derived from GitHub. Scans, rules, filed alerts and tag
+// snapshots survive: a repo removed and re-added must not reset its baseline.
 export async function purgeRepoProjections(repoNames: string[]): Promise<void> {
   if (repoNames.length === 0) return
-  const db = rawDb()
-  await Promise.all([
-    db.collection<{ _id: string }>("repos").deleteMany({ _id: { $in: repoNames } }),
-    db.collection("repo_access").deleteMany({ repo: { $in: repoNames } }),
-    db.collection("push_actors").deleteMany({ repo: { $in: repoNames } }),
-    db.collection("pull_requests").deleteMany({ repo: { $in: repoNames } }),
-  ])
+  await q(async (tx) => {
+    await tx.delete(repos).where(inArray(repos.fullName, repoNames))
+    await tx.delete(repoAccess).where(inArray(repoAccess.repo, repoNames))
+    await tx.delete(pushActors).where(inArray(pushActors.repo, repoNames))
+    await tx.delete(pullRequests).where(inArray(pullRequests.repo, repoNames))
+    await tx.delete(dependencyInventory).where(inArray(dependencyInventory.repo, repoNames))
+  })
 }
 
 export async function purgeOrgProjections(org: string): Promise<void> {
-  const db = rawDb()
-  const prefix = `^${org.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/`
-  await Promise.all([
-    db.collection("repos").deleteMany({ org }),
-    db.collection("repo_access").deleteMany({ org }),
-    db.collection("push_actors").deleteMany({ repo: { $regex: prefix } }),
-    db.collection("pull_requests").deleteMany({ org }),
-  ])
+  const prefix = `${org.replace(/[\\%_]/g, "\\$&")}/%`
+  await q(async (tx) => {
+    await tx.delete(repos).where(eq(repos.org, org))
+    await tx.delete(repoAccess).where(eq(repoAccess.org, org))
+    await tx.delete(pushActors).where(like(pushActors.repo, prefix))
+    await tx.delete(pullRequests).where(eq(pullRequests.org, org))
+    await tx.delete(dependencyInventory).where(like(dependencyInventory.repo, prefix))
+  })
+}
+
+// Counts only what the caller can read, so it measures their sync, not the org's.
+export async function countSyncedRepos(org: string): Promise<number> {
+  const rows = await q((tx) =>
+    tx
+      .select({ n: sql<number>`count(*)::int` })
+      .from(repos)
+      .where(and(eq(repos.org, org), isNotNull(repos.syncedAt))),
+  )
+  return rows[0]?.n ?? 0
 }

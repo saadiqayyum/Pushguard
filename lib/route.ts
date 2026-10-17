@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server"
-import { ZodError } from "zod"
+import { ZodError, type ZodType } from "zod"
+import { requireUser, type User } from "@/lib/auth"
+import { hit, withUser } from "@/lib/db"
 import { AppError } from "@/lib/errors"
+import { USER_RATE_WINDOW_SECONDS, USER_REQUESTS_PER_WINDOW } from "@/lib/limits"
 import { logger } from "@/lib/logger"
+import { requireTerms } from "@/lib/terms"
 
 type Handler = (request: Request, context: { params: Promise<Record<string, string>> }) => Promise<Response>
 
@@ -21,9 +25,13 @@ export function withErrorHandler(route: string, handler: Handler): Handler {
         cause: appError.cause instanceof Error ? appError.cause.message : undefined,
         ms: Date.now() - start,
       })
+      const retryAfter =
+        appError.code === "rate_limited" && appError.retryAfterSeconds
+          ? { "Retry-After": String(Math.ceil(appError.retryAfterSeconds)) }
+          : undefined
       return NextResponse.json(
         { error: { code: appError.code, message: clientMessage(appError) } },
-        { status: appError.status },
+        { status: appError.status, headers: retryAfter },
       )
     }
   }
@@ -40,4 +48,34 @@ function toAppError(error: unknown): AppError {
 
 function clientMessage(error: AppError): string {
   return error.code === "internal" ? "Internal error" : error.message
+}
+
+type UserHandler = (
+  request: Request,
+  context: { params: Promise<Record<string, string>> },
+  user: User,
+) => Promise<Response>
+
+// Every user route: signed in, counted against the login's window, terms
+// accepted, and run inside withUser so row-level security sees who is asking.
+export function userRoute(route: string, handler: UserHandler, options?: { termsExempt: true }): Handler {
+  return withErrorHandler(route, async (request, context) => {
+    const user = await requireUser()
+    return withUser(user.login, async () => {
+      const { count, resetIn } = await hit(`user:${user.login.toLowerCase()}`, USER_RATE_WINDOW_SECONDS)
+      if (count > USER_REQUESTS_PER_WINDOW) {
+        throw new AppError("rate_limited", "Too many requests", { retryAfterSeconds: resetIn })
+      }
+      if (!options?.termsExempt) await requireTerms(user.login)
+      return handler(request, context, user)
+    })
+  })
+}
+
+// The only way a route answers with data: through an explicit output schema,
+// which strips any column the schema does not name.
+export function respond<T>(schema: ZodType<T>, data: unknown, init?: ResponseInit): Response {
+  const parsed = schema.safeParse(data)
+  if (!parsed.success) throw new AppError("internal", "Response failed its schema", { cause: parsed.error })
+  return NextResponse.json({ data: parsed.data }, init)
 }

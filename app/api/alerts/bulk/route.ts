@@ -1,48 +1,53 @@
-import { NextResponse } from "next/server"
-import { requireUser } from "@/lib/auth"
-import { db, activeInstallation, canWriteRepo, noteAlertActivity, setAlertsArchived } from "@/lib/db"
+import { activeInstallation, alertsByIds, canWriteRepo, setAlertsArchived } from "@/lib/db"
 import { closeIssue } from "@/lib/github"
 import { logger } from "@/lib/logger"
-import { withErrorHandler } from "@/lib/route"
+import { respond, userRoute } from "@/lib/route"
+import { requireTenant } from "@/lib/tenant"
 import { bulkAlertsBody } from "@/schemas/api"
+import { bulkResultOut } from "@/schemas/output"
 
 export const maxDuration = 60
 
-// Bulk triage.
-export const POST = withErrorHandler("/api/alerts/bulk", async (request) => {
-  const user = await requireUser()
+// Closing goes to GitHub only; the issues webhook mirrors the new state back.
+export const POST = userRoute("/api/alerts/bulk", async (request) => {
   const { ids, action } = bulkAlertsBody.parse(await request.json())
+  const { login } = await requireTenant()
+  const keys = ids.map((id) => {
+    const [repo, number] = id.split("#")
+    return { repo, number: Number(number) }
+  })
 
   if (action !== "close") {
-    const moved = await setAlertsArchived(user.login, ids, action === "archive")
-    logger.info("alerts_archived", { by: user.login, action, count: moved })
-    return NextResponse.json({ data: { done: moved, failed: [] } })
+    const done = await setAlertsArchived(login, keys, action === "archive")
+    logger.info("alerts_archived", { by: login, action, count: done })
+    return respond(bulkResultOut, { done, failed: [] })
   }
 
-  const rows = await db.alerts().find({ _id: { $in: ids } }).toArray()
-  const failed: { id: string; reason: string }[] = []
+  const readable = await alertsByIds(login, keys)
+  const found = new Set(readable.map((alert) => `${alert.repo}#${alert.number}`))
+  const failed = ids.filter((id) => !found.has(id)).map((id) => ({ id, reason: "Not found" }))
   let done = 0
 
-  for (const alert of rows) {
+  for (const alert of readable) {
+    const id = `${alert.repo}#${alert.number}`
     try {
-      if (!(await canWriteRepo(user.login, alert.repo))) {
-        throw new Error("You do not have permission to close issues here")
+      if (!(await canWriteRepo(login, alert.repo))) {
+        failed.push({ id, reason: "You cannot close issues in this repository" })
+        continue
       }
       const installation = await activeInstallation(alert.org)
-      if (!installation) throw new Error("Pushguard is not installed on this account")
-
+      if (!installation) {
+        failed.push({ id, reason: "Pushguard is not installed on this account" })
+        continue
+      }
       await closeIssue(installation.installationId, alert.repo, alert.number)
-      await noteAlertActivity(alert.repo, alert.number, {
-        state: "closed",
-        by: user.login,
-        action: "closed",
-      })
       done++
     } catch (error) {
-      failed.push({ id: alert._id, reason: error instanceof Error ? error.message : "Could not close" })
+      logger.warn("alert_close_failed", { id, error: error instanceof Error ? error.message : String(error) })
+      failed.push({ id, reason: "Could not close on GitHub" })
     }
   }
 
-  logger.info("alerts_closed", { by: user.login, done, failed: failed.length })
-  return NextResponse.json({ data: { done, failed } })
+  logger.info("alerts_closed", { by: login, done, failed: failed.length })
+  return respond(bulkResultOut, { done, failed })
 })

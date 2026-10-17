@@ -15,6 +15,10 @@ const squeeze = (line: string) =>
     .replace(/\s+/g, " ")
     .trim()
 
+// Prose is rendered as markdown, not code. Squeezing strips zero-width
+// characters, so mentions are neutralized after it, not before.
+const unmention = (text: string) => text.replaceAll("@", "@\u200b")
+
 export const MAX_FILES_PER_FINDING = 20
 export const MAX_LINES_PER_FINDING = 5
 export const MAX_LINE_LENGTH = 300
@@ -42,7 +46,7 @@ export function toFinding(
     ...(options.prose ? { prose: true as const } : {}),
     lines: lines
       .slice(0, MAX_LINES_PER_FINDING)
-      .map((line) => squeeze(line).slice(0, options.prose ? MAX_PROSE_LENGTH : MAX_LINE_LENGTH)),
+      .map((line) => (options.prose ? unmention(squeeze(line).slice(0, MAX_PROSE_LENGTH)) : squeeze(line).slice(0, MAX_LINE_LENGTH))),
   }
 }
 

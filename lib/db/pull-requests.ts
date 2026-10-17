@@ -1,53 +1,59 @@
-import { defineCollection } from "./client"
-import { accessibleRepos } from "./access"
+import { and, desc, eq, inArray, sql } from "drizzle-orm"
+import { boolean, index, integer, pgPolicy, primaryKey, text, timestamp } from "drizzle-orm/pg-core"
+import { app, appRole, q, systemAccess } from "./client"
+import { repoAccess } from "./access"
 import { alerts } from "./alerts"
 
 // Open pull requests, as a projection. A closed or merged one is deleted.
-export type PullRequestDoc = {
-  _id: string
-  repo: string
-  org: string
-  number: number
-  title: string
-  author: string
-  headRef: string
-  headSha: string
-  baseRef: string
-  draft: boolean
-  url: string
-  openedAt: Date
-  updatedAt: Date
-}
+export const pullRequests = app
+  .table(
+    "pull_requests",
+    {
+      repo: text().notNull(),
+      number: integer().notNull(),
+      org: text().notNull(),
+      title: text().notNull(),
+      author: text().notNull(),
+      headRef: text().notNull(),
+      headSha: text().notNull(),
+      baseRef: text().notNull(),
+      draft: boolean().notNull().default(false),
+      url: text().notNull(),
+      openedAt: timestamp({ withTimezone: true }).notNull(),
+      updatedAt: timestamp({ withTimezone: true }).notNull(),
+    },
+    (t) => [systemAccess("pull_requests"), 
+      primaryKey({ columns: [t.repo, t.number] }),
+      index().on(t.org, t.updatedAt),
+      pgPolicy("pull_requests_readable", { for: "select", to: appRole, using: sql`authz.can_read(repo)` }),
+    ],
+  )
+  .enableRLS()
 
-export const pullRequests = defineCollection<PullRequestDoc>("pull_requests", [
-  { keys: { org: 1, updatedAt: -1 } },
-  { keys: { repo: 1 } },
-])
-
-const pullRequestId = (repo: string, number: number) => `${repo}#${number}`
-
-export type PullRequestFacts = Omit<PullRequestDoc, "_id" | "org">
+export type PullRequestDoc = typeof pullRequests.$inferSelect
+export type PullRequestFacts = Omit<PullRequestDoc, "org">
 
 export async function upsertPullRequest(facts: PullRequestFacts): Promise<void> {
-  await pullRequests().updateOne(
-    { _id: pullRequestId(facts.repo, facts.number) },
-    { $set: { org: facts.repo.split("/")[0], ...facts } },
-    { upsert: true },
+  const row = { ...facts, org: facts.repo.split("/")[0] }
+  await q((tx) =>
+    tx.insert(pullRequests).values(row).onConflictDoUpdate({ target: [pullRequests.repo, pullRequests.number], set: row }),
   )
 }
 
 export async function removePullRequest(repo: string, number: number): Promise<void> {
-  await pullRequests().deleteOne({ _id: pullRequestId(repo, number) })
+  await q((tx) => tx.delete(pullRequests).where(and(eq(pullRequests.repo, repo), eq(pullRequests.number, number))))
 }
 
 // Replace one repository's rows with what GitHub lists as open right now.
 export async function replaceRepoPullRequests(repo: string, open: PullRequestFacts[]): Promise<void> {
-  await pullRequests().deleteMany({ repo })
-  if (open.length === 0) return
-  await pullRequests().insertMany(
-    open.map((facts) => ({ _id: pullRequestId(repo, facts.number), org: repo.split("/")[0], ...facts })),
-    { ordered: false },
-  )
+  await q(async (tx) => {
+    await tx.delete(pullRequests).where(eq(pullRequests.repo, repo))
+    if (open.length === 0) return
+    await tx
+      .insert(pullRequests)
+      .values(open.map((facts) => ({ ...facts, repo, org: repo.split("/")[0] })))
+      .onConflictDoNothing()
+  })
 }
 
 export type PullRequestPage = {
@@ -61,35 +67,29 @@ export async function listOpenPullRequests(
   orgs: string[],
   paging: { skip: number; perPage: number },
 ): Promise<PullRequestPage> {
-  const readable = await accessibleRepos(login)
-  if (readable.length === 0) return { rows: [], total: 0, hasMore: false }
+  const filter = and(
+    sql`exists (select 1 from ${repoAccess} a where a.login = ${login.toLowerCase()} and a.repo = ${pullRequests.repo})`,
+    orgs.length > 0 ? inArray(pullRequests.org, orgs) : undefined,
+  )
+  const openAlerts = sql<number>`(select count(*)::int from ${alerts} al where al.repo = ${pullRequests.repo}
+    and (al.pull_request->>'number')::int = ${pullRequests.number} and al.state = 'open' and al.archived_at is null)`
 
-  const filter = { repo: { $in: readable }, ...(orgs.length > 0 ? { org: { $in: orgs } } : {}) }
-  const [docs, total] = await Promise.all([
-    pullRequests().find(filter).sort({ updatedAt: -1 }).skip(paging.skip).limit(paging.perPage).toArray(),
-    pullRequests().countDocuments(filter),
-  ])
-  if (docs.length === 0) return { rows: [], total, hasMore: false }
-
-  const flagged = await alerts()
-    .find(
-      {
-        archivedAt: null,
-        state: "open",
-        $or: docs.map((doc) => ({ repo: doc.repo, "pullRequest.number": doc.number })),
-      },
-      { projection: { repo: 1, "pullRequest.number": 1 } },
-    )
-    .toArray()
-  const counts = new Map<string, number>()
-  for (const alert of flagged) {
-    const key = pullRequestId(alert.repo, alert.pullRequest!.number)
-    counts.set(key, (counts.get(key) ?? 0) + 1)
-  }
-
+  const [rows, counted] = await q((tx) =>
+    Promise.all([
+      tx
+        .select({ pr: pullRequests, openAlerts })
+        .from(pullRequests)
+        .where(filter)
+        .orderBy(desc(pullRequests.updatedAt))
+        .offset(paging.skip)
+        .limit(paging.perPage),
+      tx.select({ n: sql<number>`count(*)::int` }).from(pullRequests).where(filter),
+    ]),
+  )
+  const total = counted[0]?.n ?? 0
   return {
-    rows: docs.map((doc) => ({ ...doc, openAlerts: counts.get(doc._id) ?? 0 })),
+    rows: rows.map(({ pr, openAlerts }) => ({ ...pr, openAlerts })),
     total,
-    hasMore: paging.skip + docs.length < total,
+    hasMore: paging.skip + rows.length < total,
   }
 }

@@ -1,17 +1,44 @@
 import { App } from "@octokit/app"
 import { Octokit } from "@octokit/core"
+import { retry } from "@octokit/plugin-retry"
+import { throttling } from "@octokit/plugin-throttling"
+import { collectPatchLines, type FileLines } from "@/lib/diff-lines"
+import { githubMeterPlugin } from "@/lib/github-meter"
 import { env } from "@/lib/env"
-import { AppError, type ErrorCode } from "@/lib/errors"
+import { AppError } from "@/lib/errors"
+import {
+  classifyGitHubError,
+  GITHUB_DO_NOT_RETRY,
+  GITHUB_MAX_RETRIES,
+  MAX_ORG_MEMBERS,
+  shouldRetryRateLimit,
+  MAX_DELIVERY_PAGES,
+  MAX_USER_INSTALLATIONS,
+  MAX_REGISTERED_REPOS,
+} from "@/lib/github-limits"
 import { logger } from "@/lib/logger"
+import { RUNNER_LABEL_COLOR } from "@/lib/runner/limits"
 import { SCAN_COMMIT_WINDOW } from "@/lib/paging"
 import { scanRange } from "@/lib/scan-range"
 import type { ChangeType } from "@/schemas/rule"
 
-// Forty times the old 50 KB. The cap exists because a diff has to be held in.
-const DIFF_MAX_BYTES = 2_000_000
+function onLimit(event: string) {
+  return (retryAfter: number, options: { method: string; url: string }, _octokit: unknown, retryCount: number) => {
+    const retry = shouldRetryRateLimit(retryAfter, retryCount)
+    logger.warn(event, { method: options.method, url: options.url, retryAfter, retryCount, retry })
+    return retry
+  }
+}
 
-// The budget, for anything that has to explain it to a reader.
-export const DIFF_READ_BUDGET = "2 MB"
+const GitHubOctokit = Octokit.plugin(throttling, retry, githubMeterPlugin as never).defaults({
+  throttle: {
+    onRateLimit: onLimit("github_rate_limited"),
+    onSecondaryRateLimit: onLimit("github_secondary_rate_limited"),
+  },
+  retry: { retries: GITHUB_MAX_RETRIES, doNotRetry: GITHUB_DO_NOT_RETRY },
+})
+
+export type GitHubClient = InstanceType<typeof GitHubOctokit>
 
 let app: App | null = null
 
@@ -19,64 +46,28 @@ function githubApp(): App {
   app ??= new App({
     appId: env().GITHUB_APP_ID,
     privateKey: env().GITHUB_APP_PRIVATE_KEY.replace(/\\n/g, "\n"),
+    Octokit: GitHubOctokit,
   })
   return app
 }
 
 // Octokit caches installation tokens internally per installation.
-function client(installationId: number): Promise<Octokit> {
-  return githubApp().getInstallationOctokit(installationId)
+export function client(installationId: number): Promise<GitHubClient> {
+  return githubApp().getInstallationOctokit(installationId) as Promise<GitHubClient>
 }
 
-// GitHub's status code is the only thing that tells "you may not see this" apart.
-function codeFor(status: number | undefined): ErrorCode {
-  if (status === 404) return "not_found"
-  if (status === 401 || status === 403) return "forbidden"
-  if (status === 429) return "rate_limited"
-  return "upstream_github"
-}
-
-async function github<T>(operation: string, fn: () => Promise<T>): Promise<T> {
+export async function github<T>(operation: string, fn: () => Promise<T>): Promise<T> {
   try {
     return await fn()
   } catch (error) {
-    const status = (error as { status?: number }).status
-    throw new AppError(codeFor(status), `GitHub ${operation} failed`, { cause: error })
+    const { code, retryAfterSeconds } = classifyGitHubError(error)
+    throw new AppError(code, `GitHub ${operation} failed`, { cause: error, retryAfterSeconds })
   }
 }
 
-function splitRepo(fullName: string): { owner: string; repo: string } {
+export function splitRepo(fullName: string): { owner: string; repo: string } {
   const [owner, repo] = fullName.split("/")
   return { owner, repo }
-}
-
-export type CompareResult = {
-  addedLines: string[]
-  truncated: boolean
-}
-
-export async function fetchAddedLines(
-  installationId: number,
-  repoFullName: string,
-  before: string,
-  after: string,
-): Promise<CompareResult> {
-  const diff = await github("compare", async () => {
-    const response = await (await client(installationId)).request(
-      "GET /repos/{owner}/{repo}/compare/{basehead}",
-      { ...splitRepo(repoFullName), basehead: `${before}...${after}`, mediaType: { format: "diff" } },
-    )
-    return response.data as unknown as string
-  })
-
-  const truncated = diff.length > DIFF_MAX_BYTES
-  const addedLines = diff
-    .slice(0, DIFF_MAX_BYTES)
-    .split("\n")
-    .filter((line) => line.startsWith("+") && !line.startsWith("+++"))
-    .map((line) => line.slice(1))
-
-  return { addedLines, truncated }
 }
 
 // Did this commit reach the branch through a pull request?
@@ -109,17 +100,25 @@ export type RepoTree = {
   truncated: boolean
 }
 
-// Every path in the repository at one commit, in a single request.
+// Every path in the repository at one commit, in a single request. A repository
+// with no commits answers 409; it has no paths, which is a result, not a failure.
 export async function fetchRepoTree(
   installationId: number,
   repoFullName: string,
   ref: string,
 ): Promise<RepoTree> {
   return github("read tree", async () => {
-    const response = await (await client(installationId)).request(
-      "GET /repos/{owner}/{repo}/git/trees/{tree_sha}",
-      { ...splitRepo(repoFullName), tree_sha: ref, recursive: "1" },
-    )
+    const response = await (await client(installationId))
+      .request("GET /repos/{owner}/{repo}/git/trees/{tree_sha}", {
+        ...splitRepo(repoFullName),
+        tree_sha: ref,
+        recursive: "1",
+      })
+      .catch((error: { status?: number }) => {
+        if (error.status === 409) return null
+        throw error
+      })
+    if (response === null) return { entries: [], truncated: false }
     const entries = response.data.tree
       .filter((node) => node.type === "blob" && node.path && node.sha)
       .map((node) => ({ path: node.path!, blobSha: node.sha!, size: node.size ?? 0 }))
@@ -132,6 +131,8 @@ export const BLOB_BATCH = 40
 
 export type BlobBatch = {
   files: Map<string, string>
+  oids: Map<string, string>
+  binary: Set<string>
   remaining: number | null
 }
 
@@ -143,7 +144,9 @@ export async function fetchBlobs(
   paths: string[],
 ): Promise<BlobBatch> {
   const files = new Map<string, string>()
-  if (paths.length === 0) return { files, remaining: null }
+  const oids = new Map<string, string>()
+  const binary = new Set<string>()
+  if (paths.length === 0) return { files, oids, binary, remaining: null }
 
   return github("read blobs", async () => {
     const octokit = await client(installationId)
@@ -152,7 +155,7 @@ export async function fetchBlobs(
 
     const declarations = wanted.map((_, i) => `$e${i}: String!`).join(", ")
     const selections = wanted
-      .map((_, i) => `f${i}: object(expression: $e${i}) { ... on Blob { text isTruncated } }`)
+      .map((_, i) => `f${i}: object(expression: $e${i}) { ... on Blob { oid text isTruncated isBinary } }`)
       .join("\n      ")
     const variables: Record<string, string> = { owner, repo }
     wanted.forEach((path, i) => {
@@ -161,7 +164,7 @@ export async function fetchBlobs(
 
     const result = await octokit.graphql<{
       rateLimit?: { remaining: number }
-      repository: Record<string, { text?: string | null; isTruncated?: boolean } | null>
+      repository: Record<string, { oid?: string; text?: string | null; isTruncated?: boolean; isBinary?: boolean | null } | null>
     }>(
       `query($owner: String!, $repo: String!, ${declarations}) {
       rateLimit { remaining }
@@ -174,10 +177,26 @@ export async function fetchBlobs(
 
     wanted.forEach((path, i) => {
       const blob = result.repository?.[`f${i}`]
+      if (blob?.oid) oids.set(path, blob.oid)
+      if (blob?.isBinary) binary.add(path)
       if (blob?.text && !blob.isTruncated) files.set(path, blob.text)
     })
 
-    return { files, remaining: result.rateLimit?.remaining ?? null }
+    return { files, oids, binary, remaining: result.rateLimit?.remaining ?? null }
+  })
+}
+
+// One file at a commit, raw. Blob text over GraphQL truncates large lockfiles;
+// the contents API serves the bytes. The caller checks size from the tree first.
+export async function fetchRawFile(installationId: number, repoFullName: string, ref: string, path: string): Promise<string> {
+  return github("read file", async () => {
+    const response = await (await client(installationId)).request("GET /repos/{owner}/{repo}/contents/{path}", {
+      ...splitRepo(repoFullName),
+      path,
+      ref,
+      mediaType: { format: "raw" },
+    })
+    return response.data as unknown as string
   })
 }
 
@@ -187,6 +206,8 @@ export type CompareFile = {
   additions: number
   deletions: number
   patch?: string
+  sha?: string
+  previousPath?: string
 }
 
 // Per-file stats and hunks for one range. What a review needs to know where to
@@ -208,6 +229,8 @@ export async function fetchCompareFiles(
       additions?: number
       deletions?: number
       patch?: string
+      sha?: string
+      previous_filename?: string
     }[]
     return {
       files: raw.map((file) => ({
@@ -216,6 +239,8 @@ export async function fetchCompareFiles(
         additions: file.additions ?? 0,
         deletions: file.deletions ?? 0,
         patch: file.patch,
+        sha: file.sha,
+        previousPath: file.previous_filename,
       })),
       truncated: raw.length >= COMPARE_FILE_LIMIT,
     }
@@ -227,12 +252,13 @@ export type DependencyChange = {
   version: string
   ecosystem: string
   manifest: string
+  previous?: string
   vulnerabilities: { severity: string; summary: string; advisory: string }[]
 }
 
-// Packages this range added, with any known advisories against them.
-// Null when the repository has no dependency graph enabled, which 404s.
-export async function fetchDependencyChanges(
+// Every package this range added. Null when the repository has no dependency
+// graph enabled, which 404s.
+export async function fetchAddedDependencies(
   installationId: number,
   repoFullName: string,
   base: string,
@@ -251,13 +277,17 @@ export async function fetchDependencyChanges(
       manifest: string
       vulnerabilities?: { severity: string; advisory_summary: string; advisory_ghsa_id: string }[]
     }[]
+    const removed = new Map(
+      rows.filter((row) => row.change_type === "removed").map((row) => [[row.ecosystem, row.manifest, row.name].join("\0"), row.version]),
+    )
     return rows
-      .filter((row) => row.change_type === "added" && (row.vulnerabilities?.length ?? 0) > 0)
+      .filter((row) => row.change_type === "added")
       .map((row) => ({
         name: row.name,
         version: row.version,
         ecosystem: row.ecosystem,
         manifest: row.manifest,
+        previous: removed.get([row.ecosystem, row.manifest, row.name].join("\0")),
         vulnerabilities: (row.vulnerabilities ?? []).map((v) => ({
           severity: v.severity,
           summary: v.advisory_summary,
@@ -275,31 +305,15 @@ export async function fetchDependencyChanges(
   }
 }
 
-export type InstallationRepo = { fullName: string; private: boolean; ownerType: string }
-
-// Hard ceiling on how many repos one installation contributes. A very large org
-// would otherwise page forever and bloat the installation document.
-const MAX_INSTALLATION_REPOS = 500
-
-// Used once per installation to backfill the repo list when the installation
-// webhook predates repo tracking. Steady state is webhook-driven.
-export async function listInstallationRepos(installationId: number): Promise<InstallationRepo[]> {
-  return github("list installation repositories", async () => {
-    const octokit = await client(installationId)
-    const repos: InstallationRepo[] = []
-    for (let page = 1; page <= MAX_INSTALLATION_REPOS / 100; page++) {
-      const response = await octokit.request("GET /installation/repositories", { per_page: 100, page })
-      repos.push(
-        ...response.data.repositories.map((repo) => ({
-          fullName: repo.full_name,
-          private: repo.private,
-          ownerType: repo.owner.type,
-        })),
-      )
-      if (response.data.repositories.length < 100) break
-    }
-    return repos
-  })
+// Added packages with a known advisory against them.
+export async function fetchDependencyChanges(
+  installationId: number,
+  repoFullName: string,
+  base: string,
+  head: string,
+): Promise<DependencyChange[] | null> {
+  const added = await fetchAddedDependencies(installationId, repoFullName, base, head)
+  return added && added.filter((dep) => dep.vulnerabilities.length > 0)
 }
 
 // Everyone who can read a repository, as GitHub computes it, org role, team.
@@ -335,7 +349,8 @@ export async function listRepoCollaborators(
   })
 }
 
-// Branches and default branch on the installation's own credentials, for the.
+// Branches and default branch on the installation's own credentials, for the
+// stored projection the branch picker reads.
 export async function fetchRepoBranches(
   installationId: number,
   repoFullName: string,
@@ -366,6 +381,30 @@ export async function listTeamMembers(installationId: number, org: string, teamS
       { org, team_slug: teamSlug, per_page: 100 },
     )
     return response.data.map((user) => user.login)
+  })
+}
+
+// Everyone in an organization with their role, for the org_members projection.
+export async function listOrgMembers(
+  installationId: number,
+  org: string,
+): Promise<{ members: { login: string; role: "admin" | "member" }[]; truncated: boolean }> {
+  return github("list organization members", async () => {
+    const octokit = await client(installationId)
+    const members: { login: string; role: "admin" | "member" }[] = []
+    let truncated = false
+    for (const role of ["admin", "member"] as const) {
+      for (let page = 1; ; page++) {
+        if (members.length >= MAX_ORG_MEMBERS) {
+          truncated = true
+          break
+        }
+        const response = await octokit.request("GET /orgs/{org}/members", { org, role, per_page: 100, page })
+        members.push(...response.data.map((user) => ({ login: user.login, role })))
+        if (response.data.length < 100) break
+      }
+    }
+    return { members: members.slice(0, MAX_ORG_MEMBERS), truncated }
   })
 }
 
@@ -450,6 +489,21 @@ export async function createAlertIssue(
   })
 }
 
+export async function addIssueLabels(
+  installationId: number,
+  repoFullName: string,
+  number: number,
+  labels: string[],
+): Promise<void> {
+  await github("label issue", async () =>
+    (await client(installationId)).request("POST /repos/{owner}/{repo}/issues/{issue_number}/labels", {
+      ...splitRepo(repoFullName),
+      issue_number: number,
+      labels,
+    }),
+  )
+}
+
 export async function commentOnIssue(
   installationId: number,
   repoFullName: string,
@@ -487,37 +541,6 @@ export type AlertIssue = {
   labels: { name: string }[]
 }
 
-// Direct lookup: is this app installed on the given user/org? Lets the.
-export async function findInstallationForAccount(account: string): Promise<number | null> {
-  const octokit = githubApp().octokit
-  for (const route of ["GET /users/{account}/installation", "GET /orgs/{account}/installation"] as const) {
-    try {
-      const response = await octokit.request(route, { account, org: account, username: account })
-      return response.data.id
-    } catch {
-      continue
-    }
-  }
-  return null
-}
-
-// Team slugs, as `org/team`, ready to paste into an @mention. Needs the
-// members:read org permission, which only exists on organization installs, // a personal account has no teams, so this never calls GitHub for one.
-export async function listInstallationTeams(
-  installationId: number,
-  account: string,
-  accountType: "User" | "Organization",
-): Promise<string[]> {
-  if (accountType !== "Organization") return []
-  return github("list teams", async () => {
-    const response = await (await client(installationId)).request("GET /orgs/{org}/teams", {
-      org: account,
-      per_page: 100,
-    })
-    return response.data.map((team) => `${account}/${team.slug}`)
-  })
-}
-
 // GitHub's compare endpoint stops listing files at 300.
 const COMPARE_FILE_LIMIT = 300
 
@@ -525,7 +548,7 @@ export type RepoSnapshot = {
   repo: string
   branch: string
   files: { path: string; changeType: ChangeType }[]
-  addedLines: string[]
+  addedLines: FileLines
   commits: number
   truncated: boolean
   headSha: string
@@ -540,22 +563,13 @@ function toChangeType(status: string): ChangeType {
 
 type ChangedFile = { filename: string; status: string; patch?: string }
 
-function collectAddedLines(files: ChangedFile[]): { addedLines: string[]; truncated: boolean } {
-  const addedLines: string[] = []
-  let budget = DIFF_MAX_BYTES
-  for (const file of files) {
-    if (!file.patch) continue
-    if (budget <= 0) return { addedLines, truncated: true }
-    const slice = file.patch.slice(0, budget)
-    budget -= slice.length
-    for (const line of slice.split("\n")) {
-      if (line.startsWith("+") && !line.startsWith("+++")) addedLines.push(line.slice(1))
-    }
-  }
-  return { addedLines, truncated: budget <= 0 }
+function collectAddedLines(files: ChangedFile[]): { addedLines: FileLines; truncated: boolean } {
+  const { added, truncated } = collectPatchLines(files.map((file) => ({ path: file.filename, patch: file.patch })))
+  return { addedLines: added, truncated }
 }
 
-// Recent history for one repository, shaped like the push payload the engine.
+// Recent history for one repository, shaped like the push payload the engine
+// reads. A repository with no commits answers 409 and reads as zero commits.
 export async function fetchRepoSnapshot(
   repoFullName: string,
   installationId: number,
@@ -570,14 +584,14 @@ export async function fetchRepoSnapshot(
       (await octokit.request("GET /repos/{owner}/{repo}", { owner, repo })).data.default_branch
     const base = { repo: repoFullName, branch }
 
-    const history = await octokit.request("GET /repos/{owner}/{repo}/commits", {
-      owner,
-      repo,
-      sha: branch,
-      per_page: SCAN_COMMIT_WINDOW,
-    })
+    const history = await octokit
+      .request("GET /repos/{owner}/{repo}/commits", { owner, repo, sha: branch, per_page: SCAN_COMMIT_WINDOW })
+      .catch((error: { status?: number }) => {
+        if (error.status === 409) return { data: [] }
+        throw error
+      })
     if (history.data.length === 0) {
-      return { ...base, files: [], addedLines: [], commits: 0, truncated: false, headSha: "", baseSha: null }
+      return { ...base, files: [], addedLines: new Map(), commits: 0, truncated: false, headSha: "", baseSha: null }
     }
 
     const range = scanRange(history.data)!
@@ -625,7 +639,7 @@ export async function fetchRepoSnapshot(
 export type ErasedHistory = {
   commits: { sha: string; message: string; author: string | null }[]
   files: { path: string; changeType: ChangeType }[]
-  addedLines: string[]
+  addedLines: FileLines
   mergeBase: string
   truncated: boolean
 }
@@ -662,16 +676,190 @@ export async function fetchErasedHistory(
   })
 }
 
-// The authorization boundary for every scan.
-//
-
 export type UserInstallation = { id: number; account: string; accountType: "User" | "Organization" }
 
 // Capped at one page: a user in more than 100 orgs is not a case this dashboard
 // needs to serve, and paging here would run on every sign-in.
-export async function fetchUserOrgs(userToken: string): Promise<string[]> {
-  return github("list user orgs", async () => {
-    const response = await new Octokit({ auth: userToken }).request("GET /user/orgs", { per_page: 100 })
-    return response.data.map((org) => org.login)
+export async function fetchUserMemberships(userToken: string): Promise<{ org: string; role: "admin" | "member" }[]> {
+  return github("list user memberships", async () => {
+    const response = await new GitHubOctokit({ auth: userToken }).request("GET /user/memberships/orgs", {
+      state: "active",
+      per_page: 100,
+    })
+    return response.data.map((m) => ({ org: m.organization.login, role: m.role === "admin" ? "admin" : "member" }))
   })
+}
+
+// GitHub answers a failed refresh with 200 and an `error` field, so the caller
+// validates the body rather than trusting the status.
+export async function refreshUserToken(refreshToken: string): Promise<unknown> {
+  return github("refresh user token", async () => {
+    const response = await new GitHubOctokit().request("POST https://github.com/login/oauth/access_token", {
+      headers: { accept: "application/json" },
+      client_id: env().AUTH_GITHUB_ID,
+      client_secret: env().AUTH_GITHUB_SECRET,
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+    })
+    return response.data
+  })
+}
+
+// The installation token stays on this server; a runner only ever sees bytes.
+export async function repoTarball(
+  installationId: number,
+  repo: string,
+  sha: string,
+  maxBytes: number,
+): Promise<ReadableStream<Uint8Array>> {
+  const response = await github("tarball", async () =>
+    (await client(installationId)).request("GET /repos/{owner}/{repo}/tarball/{ref}", {
+      ...splitRepo(repo),
+      ref: sha,
+      request: { parseSuccessResponseBody: false },
+    }),
+  )
+  let sent = 0
+  const cap = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      sent += chunk.byteLength
+      if (sent > maxBytes) controller.error(new AppError("payload_too_large", "Tarball exceeds cap"))
+      else controller.enqueue(chunk)
+    },
+  })
+  return (response.data as unknown as ReadableStream<Uint8Array>).pipeThrough(cap)
+}
+
+export type AppDelivery = {
+  id: number
+  guid: string
+  deliveredAt: Date
+  redelivery: boolean
+  statusCode: number
+  event: string
+  installationId: number | null
+}
+
+// The App's webhook delivery log, newest first, back to `since`.
+export async function listAppDeliveries(since: Date): Promise<AppDelivery[]> {
+  const octokit = githubApp().octokit
+  const out: AppDelivery[] = []
+  let cursor: string | undefined
+  for (let page = 0; page < MAX_DELIVERY_PAGES; page++) {
+    const response = await github("list deliveries", () =>
+      octokit.request("GET /app/hook/deliveries", { per_page: 100, ...(cursor ? { cursor } : {}) }),
+    )
+    for (const row of response.data) {
+      const deliveredAt = new Date(row.delivered_at)
+      if (deliveredAt < since) return out
+      out.push({
+        id: Number(row.id),
+        guid: row.guid,
+        deliveredAt,
+        redelivery: row.redelivery,
+        statusCode: row.status_code,
+        event: row.event,
+        installationId: row.installation_id == null ? null : Number(row.installation_id),
+      })
+    }
+    cursor = /[?&]cursor=([^&>]+)[^>]*>;\s*rel="next"/.exec(response.headers.link ?? "")?.[1]
+    if (!cursor) break
+  }
+  return out
+}
+
+export async function redeliver(deliveryId: number): Promise<boolean> {
+  try {
+    await github("redeliver", () =>
+      githubApp().octokit.request("POST /app/hook/deliveries/{delivery_id}/attempts", { delivery_id: deliveryId }),
+    )
+    return true
+  } catch {
+    return false
+  }
+}
+
+// Installations of this App the signed-in user can reach. Read at sign-in so an
+// install whose webhook never arrived is still found.
+export async function fetchUserInstallations(userToken: string): Promise<UserInstallation[]> {
+  return github("list user installations", async () => {
+    const response = await new GitHubOctokit({ auth: userToken }).request("GET /user/installations", {
+      per_page: MAX_USER_INSTALLATIONS,
+    })
+    return response.data.installations.map((i) => {
+      const account = i.account as { login?: string; slug?: string; type?: string } | null
+      return {
+        id: Number(i.id),
+        account: account?.login ?? account?.slug ?? "",
+        accountType: account?.type === "Organization" ? ("Organization" as const) : ("User" as const),
+      }
+    })
+  })
+}
+
+// The App's own record of one installation, and the repositories it covers.
+export async function fetchInstallationDetails(
+  installationId: number,
+): Promise<{ account: string; accountType: "User" | "Organization"; suspended: boolean; repos: string[] }> {
+  const installation = await github("get installation", () =>
+    githubApp().octokit.request("GET /app/installations/{installation_id}", { installation_id: installationId }),
+  )
+  const account = installation.data.account as { login?: string; slug?: string; type?: string } | null
+  const octokit = await client(installationId)
+  const repos: string[] = []
+  for (let page = 1; repos.length < MAX_REGISTERED_REPOS; page++) {
+    const response = await github("list installation repositories", () =>
+      octokit.request("GET /installation/repositories", { per_page: 100, page }),
+    )
+    repos.push(...response.data.repositories.map((r) => r.full_name))
+    if (response.data.repositories.length < 100) break
+  }
+  return {
+    account: account?.login ?? account?.slug ?? "",
+    accountType: account?.type === "Organization" ? "Organization" : "User",
+    suspended: Boolean(installation.data.suspended_at),
+    repos: repos.slice(0, MAX_REGISTERED_REPOS),
+  }
+}
+
+// False when the runner repository is gone or the App cannot write labels on it.
+export async function createRunnerLabel(installationId: number, repo: string, name: string, description: string): Promise<boolean> {
+  try {
+    await github("create runner label", async () =>
+      (await client(installationId)).request("POST /repos/{owner}/{repo}/labels", {
+        ...splitRepo(repo),
+        name,
+        description,
+        color: RUNNER_LABEL_COLOR,
+      }),
+    )
+    return true
+  } catch (error) {
+    if (error instanceof AppError && (error.code === "not_found" || error.code === "forbidden")) return false
+    throw error
+  }
+}
+
+// The name holds a nonce, so it is never logged.
+export async function deleteRunnerLabel(installationId: number, repo: string, name: string): Promise<void> {
+  try {
+    await github("delete runner label", async () =>
+      (await client(installationId)).request("DELETE /repos/{owner}/{repo}/labels/{name}", { ...splitRepo(repo), name }),
+    )
+  } catch (error) {
+    logger.warn("runner_label_delete_failed", { repo, code: error instanceof AppError ? error.code : "internal" })
+  }
+}
+
+// The App's installation on one repository, read with the App JWT. Null when it is not installed there.
+export async function repoInstallationId(repo: string): Promise<number | null> {
+  try {
+    const response = await github("get repository installation", () =>
+      githubApp().octokit.request("GET /repos/{owner}/{repo}/installation", splitRepo(repo)),
+    )
+    return Number(response.data.id)
+  } catch (error) {
+    if (error instanceof AppError && error.code === "not_found") return null
+    throw error
+  }
 }

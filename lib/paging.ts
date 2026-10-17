@@ -4,10 +4,6 @@
 export const DEFAULT_PER_PAGE = 25
 export const MAX_PER_PAGE = 100
 
-// GitHub's search API refuses to page past 1000 results, so asking for more is
-// an error rather than an empty page.
-export const GITHUB_SEARCH_MAX_RESULTS = 1000
-
 export type Paging = { page: number; perPage: number; skip: number }
 
 function toInt(value: string | null | undefined, fallback: number): number {

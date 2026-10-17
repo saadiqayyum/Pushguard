@@ -1,6 +1,7 @@
 export type ErrorCode =
   | "unauthorized"
   | "forbidden"
+  | "terms_required"
   | "invalid_signature"
   | "validation_failed"
   | "not_found"
@@ -14,6 +15,7 @@ export type ErrorCode =
 const STATUS: Record<ErrorCode, number> = {
   unauthorized: 401,
   forbidden: 403,
+  terms_required: 403,
   invalid_signature: 401,
   validation_failed: 422,
   not_found: 404,
@@ -28,10 +30,16 @@ const STATUS: Record<ErrorCode, number> = {
 export class AppError extends Error {
   readonly code: ErrorCode
   readonly status: number
+  readonly retryAfterSeconds?: number
 
-  constructor(code: ErrorCode, message: string, options?: { cause?: unknown }) {
+  constructor(
+    code: ErrorCode,
+    message: string,
+    options?: { cause?: unknown; retryAfterSeconds?: number },
+  ) {
     super(message, options)
     this.code = code
     this.status = STATUS[code]
+    this.retryAfterSeconds = options?.retryAfterSeconds
   }
 }

@@ -1,10 +1,23 @@
 import "next-auth"
+import "next-auth/jwt"
 
 declare module "next-auth" {
   interface Session {
     login: string
-    orgs: string[]
-    // No GitHub token here on purpose. Session is what /api/auth/session hands
-    // the browser; the token lives in the JWT and is read with githubToken().
+    signedInAt: number
+    error?: "RefreshTokenError"
+  }
+}
+
+// Tokens live in the encrypted JWT only. Session is what /api/auth/session
+// hands the browser, so nothing secret is copied onto it.
+declare module "next-auth/jwt" {
+  interface JWT {
+    login?: string
+    githubToken?: string
+    refreshToken?: string
+    expiresAt?: number
+    signedInAt?: number
+    error?: "RefreshTokenError"
   }
 }

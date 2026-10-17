@@ -1,42 +1,42 @@
-export { defineCollection, ensureIndexes, indexesReady, rawDb } from "./client"
+export { asSystem, currentLogin, withUser } from "./client"
 export * from "./limits"
-export * from "./rules"
-export * from "./installations"
 export * from "./access"
+export * from "./org-members"
+export * from "./installations"
+export * from "./ai-keys"
+export * from "./rules"
 export * from "./alerts"
 export * from "./repos"
 export * from "./scans"
 export * from "./ai"
 export * from "./code-index"
+export * from "./code-symbols"
+export * from "./code-facts"
 export * from "./review-sessions"
 export * from "./pull-requests"
-
-import * as rulesEntity from "./rules"
-import * as installationsEntity from "./installations"
-import * as accessEntity from "./access"
-import * as alertsEntity from "./alerts"
-import * as reposEntity from "./repos"
-import * as scansEntity from "./scans"
-import * as aiEntity from "./ai"
-import * as codeIndexEntity from "./code-index"
-import * as reviewSessionEntity from "./review-sessions"
-import * as pullRequestEntity from "./pull-requests"
-
-// Namespaced so a collection never collides with a local named `repos` or `scans`.
-export const db = {
-  rules: rulesEntity.rules,
-  ruleVersions: rulesEntity.ruleVersions,
-  disabledPacks: rulesEntity.disabledPacks,
-  installations: installationsEntity.installations,
-  repoAccess: accessEntity.repoAccess,
-  alerts: alertsEntity.alerts,
-  repos: reposEntity.repos,
-  pushActors: reposEntity.pushActors,
-  scans: scansEntity.scans,
-  aiRules: aiEntity.aiRules,
-  aiUsage: aiEntity.aiUsage,
-  codeIndex: codeIndexEntity.codeIndex,
-  indexJobs: codeIndexEntity.indexJobs,
-  reviewSessions: reviewSessionEntity.reviewSessions,
-  pullRequests: pullRequestEntity.pullRequests,
-}
+export * from "./deliveries"
+export * from "./rate-limits"
+export * from "./jobs"
+export * from "./alert-sinks"
+export * from "./runner-jobs"
+export * from "./live"
+export * from "./job-failures"
+export * from "./malicious-packages"
+export * from "./dependency-inventory"
+export * from "./package-key"
+export * from "./threat-actors"
+export * from "./threat-indicators"
+export * from "./tag-snapshots"
+export * from "./chain-events"
+export * from "./mcp-tokens"
+export * from "./merged-commits"
+export * from "./pin-verdicts"
+export * from "./repo-locks"
+export * from "./ai-reviews"
+export * from "./platform-audit"
+export * from "./platform-rules"
+export * from "./contributor-drafts"
+export * from "./rule-shadow-hits"
+export * from "./check-scripts"
+export * from "./users"
+export * from "./org-data"
