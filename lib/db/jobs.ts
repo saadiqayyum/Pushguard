@@ -12,7 +12,7 @@ export type QueuedJob = { msgId: number; readCount: number; message: JobMessage 
 export async function enqueueJob(message: JobMessage, delaySeconds = 0): Promise<number> {
   const rows = await q((tx) =>
     tx.execute<{ send: number }>(
-      sql`select pgmq.send(${JOB_QUEUE}, ${JSON.stringify(jobMessage.parse(message))}::jsonb, ${delaySeconds})`,
+      sql`select pgmq.send(${JOB_QUEUE}, ${JSON.stringify(jobMessage.parse(message))}::jsonb, ${delaySeconds}::int)`,
     ),
   )
   return Number(rows[0].send)
@@ -33,7 +33,7 @@ export async function enqueueJobs(messages: JobMessage[]): Promise<void> {
 export async function readJobs(visibilitySeconds: number, limit: number): Promise<QueuedJob[]> {
   const rows = await q((tx) =>
     tx.execute<{ msg_id: number; read_ct: number; message: unknown }>(
-      sql`select msg_id, read_ct, message from pgmq.read(${JOB_QUEUE}, ${visibilitySeconds}, ${limit})`,
+      sql`select msg_id, read_ct, message from pgmq.read(${JOB_QUEUE}, ${visibilitySeconds}::int, ${limit}::int)`,
     ),
   )
   const jobs: QueuedJob[] = []
@@ -59,5 +59,5 @@ export async function archiveJob(msgId: number): Promise<void> {
 
 // Puts a job back after `seconds`, for a rate limit that resets later.
 export async function delayJob(msgId: number, seconds: number): Promise<void> {
-  await q((tx) => tx.execute(sql`select pgmq.set_vt(${JOB_QUEUE}, ${msgId}::bigint, ${seconds})`))
+  await q((tx) => tx.execute(sql`select pgmq.set_vt(${JOB_QUEUE}, ${msgId}::bigint, ${seconds}::int)`))
 }

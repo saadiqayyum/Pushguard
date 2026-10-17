@@ -22,7 +22,7 @@ export function withErrorHandler(route: string, handler: Handler): Handler {
         requestId,
         code: appError.code,
         error: appError.message,
-        cause: appError.cause instanceof Error ? appError.cause.message : undefined,
+        cause: rootCause(appError.cause),
         ms: Date.now() - start,
       })
       const retryAfter =
@@ -35,6 +35,13 @@ export function withErrorHandler(route: string, handler: Handler): Handler {
       )
     }
   }
+}
+
+// Drizzle wraps the Postgres error in its own, so the useful message is the innermost one.
+function rootCause(error: unknown): string | undefined {
+  let current = error
+  while (current instanceof Error && current.cause instanceof Error) current = current.cause
+  return current instanceof Error ? current.message : undefined
 }
 
 function toAppError(error: unknown): AppError {

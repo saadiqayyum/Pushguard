@@ -11,8 +11,8 @@ permissions:
 
 env:
   # FILL AT RELEASE: release tag in this repository holding detonator-linux-amd64, and its sha256.
-  DETONATOR_TAG: v0.0.0
-  DETONATOR_SHA256: "0000000000000000000000000000000000000000000000000000000000000000"
+  DETONATOR_TAG: v1.0.0
+  DETONATOR_SHA256: "21145cd55889b42e2d953f5017e889596f03f91ea04565995c22e4bb97ee4c26"
   # FILL AT RELEASE: pin ioi/isolate to a reviewed commit and gitleaks to a checksummed build.
   ISOLATE_REF: v2.0
   GITLEAKS_URL: https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz
